@@ -168,17 +168,20 @@ const DATASETS = [
       codigoCie10: ['DESCRIPCION CIE 10','DESCRIPCIÓN CIE 10','DESCRIPCION CIE10','DESCRIPCIÓN CIE10','DESCRIPCION CIE-10','DESCRIPCION DIAGNOSTICO','DIAGNOSTICO','DIAGNÓSTICO','CODIGO CIE 10','CODIGO CIE10','CODIGO CIE-10','CÓDIGO CIE 10','CIE 10','CIE10','CIE-10'],
       estadoDispensa: ['ESTADO','ESTADO DISPENSA','ESTADO DE LA DISPENSA','ESTADO DE DISPENSA'],
       usuarioCreacion: ['USUARIO CREACION','USUARIO CREACIÓN','USUARIO DE CREACION','USUARIO DE CREACIÓN','USUARIO CREADOR','USUARIO'],
-      fechaDispensacion: ['FECHA DE DISPENSACION','FECHA DISPENSACION','FECHA DISPENSACIÓN'],
-      eps: ['EPS'],
+      fechaDispensacion: ['FECHA DE DISPENSACION','FECHA DISPENSACION','FECHA DISPENSACIÓN','FECHA DISPENSA','FECHA'],
+      // La columna de EPS puede venir con el nombre largo del archivo original:
+      // "Sigla Comercial Cliente/EPS(Entidad OutSorcing)" (con o sin espacios/paréntesis).
+      eps: ['EPS','SIGLA COMERCIAL CLIENTE/EPS(ENTIDAD OUTSORCING)','SIGLA COMERCIAL CLIENTE/EPS (ENTIDAD OUTSORCING)','SIGLA COMERCIAL CLIENTE/EPS(ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS (ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS','SIGLA COMERCIAL DEL CLIENTE/EPS','SIGLA COMERCIAL CLIENTE','SIGLA COMERCIAL DEL CLIENTE','SIGLA COMERCIAL','ENTIDAD OUTSORCING','ENTIDAD OUTSOURCING'],
       contrato: ['CONTRATO'],
-      codigoArticulo: ['CODIGO DE ARTICULO','CODIGO ARTICULO','CODIGO ARTICLE','CODIGO','COD ARTICULO','COD. ARTICULO','COD ARTICLE','ID ARTICULO'],
-      descripcion: ['DESCRIPCION','DESCRIPCIÓN'],
-      unidades: ['UNIDADES'],
-      fechaVencimiento: ['FECHA DE VENCIMIENTO'],
-      cantidadAutorizada: ['CANTIDAD AUTORIZADA'],
+      // "Codigo" del reporte = "Codigo Articulo" del archivo original.
+      codigoArticulo: ['CODIGO ARTICULO','CODIGO DE ARTICULO','CODIGO ARTÍCULO','CÓDIGO ARTICULO','CÓDIGO ARTÍCULO','CODIGO','CÓDIGO','CODIGO ARTICLE','COD ARTICULO','COD. ARTICULO','COD ARTICLE','ID ARTICULO'],
+      descripcion: ['DESCRIPCION','DESCRIPCIÓN','DESCRIPCION ARTICULO','DESCRIPCIÓN ARTICULO','NOMBRE ARTICULO','ARTICULO'],
+      unidades: ['UNIDADES','UNIDADES DISPENSADAS','CANTIDAD DISPENSADA'],
+      cantidadAutorizada: ['CANTIDAD AUTORIZADA','CANT AUTORIZADA','CANTIDAD AUTORIZADO'],
       diferencia: ['DIFERENCIA'],
-      bodegaDetalle: ['BODEGA DETALLE'],
-      soportes: ['SOPORTE','SOPORTES']
+      bodegaDetalle: ['BODEGA DETALLE','BODEGA','BODEGADETALLE'],
+      // "Soporte" del reporte = "Cantidad Soportes" del archivo original.
+      soportes: ['CANTIDAD SOPORTES','CANTIDAD SOPORTE','CANTIDAD DE SOPORTES','SOPORTE','SOPORTES','NRO SOPORTES','NUMERO SOPORTES']
     }
   },
   {
@@ -600,7 +603,12 @@ function esCodigoNoMedicamento(codigo, descripcion){
 function toNumber(v){
   if (v===null||v===undefined||v==='') return 0;
   if (typeof v==='number') return v;
-  const n2 = parseFloat(v);
+  // Los CSV llegan como texto: admitimos separadores de miles y coma decimal.
+  let s=String(v).trim().replace(/\s/g,'');
+  if(/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s=s.replace(/\./g,'').replace(',','.');
+  else if(/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s=s.replace(/,/g,'');
+  else if(/^-?\d+,\d+$/.test(s)) s=s.replace(',','.');
+  const n2 = parseFloat(s);
   return isNaN(n2) ? 0 : n2;
 }
 function excelSerialToDate(n){const utcDays=Math.floor(n-25569);return new Date(utcDays*86400*1000);}
@@ -644,7 +652,13 @@ const FIELD_FALLBACK_KEYWORDS = {
   fechaDispensacion: ['FECHA DISPENS', 'FECHA DE DISPENS'],
   cantidadAutorizada: ['AUTORIZAD'],
   soportes: ['SOPORTE'],
-  documento: ['DOCUMENTO']
+  documento: ['DOCUMENTO'],
+  eps: ['SIGLA COMERCIAL','ENTIDAD OUTSORCING','ENTIDAD OUTSOURCING','EPS'],
+  codigoArticulo: ['CODIGO ARTICULO','CODIGO DE ARTICULO','CODIGO'],
+  unidades: ['UNIDADES'],
+  descripcion: ['DESCRIPCION ARTICULO','DESCRIPCION'],
+  contrato: ['CONTRATO'],
+  diferencia: ['DIFERENCIA']
 };
 function findHeaderByKeyword(headerIndex, keywords){
   for (const kw of keywords){
@@ -701,32 +715,79 @@ function completarCamposFaltantes(destino, origen){
   }
   return cambios;
 }
+/* ---------- Lectura del libro: Excel (.xlsx/.xls) y texto plano (.csv/.txt) ----------
+   Los CSV que exporta el sistema pueden venir separados por coma O por punto y coma
+   (según la configuración regional). Aquí se detecta el separador real mirando la
+   primera línea con contenido y se le indica a la librería cuál usar, para que las
+   columnas no queden todas pegadas en una sola. */
+function looksLikeTextFile(fileName, mimeType){
+  const n = String(fileName || '').toLowerCase();
+  const m = String(mimeType || '').toLowerCase();
+  if (/\.(csv|tsv|txt)$/.test(n)) return true;
+  return m === 'text/csv' || m === 'application/csv' || m === 'text/plain'
+      || m === 'text/tab-separated-values';
+}
+function detectDelimiter(text){
+  const lines = String(text || '').split(/\r?\n/);
+  for (let i = 0; i < lines.length && i < 20; i++){
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    // Se cuentan solo los separadores que están FUERA de comillas, para no
+    // confundirse con textos como "MEDICAMENTO X, 500 MG".
+    let inQuotes = false, comas = 0, puntoComas = 0, tabs = 0;
+    for (let c = 0; c < line.length; c++){
+      const ch = line[c];
+      if (ch === '"') { inQuotes = !inQuotes; continue; }
+      if (inQuotes) continue;
+      if (ch === ',') comas++;
+      else if (ch === ';') puntoComas++;
+      else if (ch === '\t') tabs++;
+    }
+    if (tabs > comas && tabs > puntoComas) return '\t';
+    if (puntoComas > comas) return ';';
+    if (comas > 0 || puntoComas > 0) return comas >= puntoComas ? ',' : ';';
+  }
+  return ',';
+}
+function decodeTextBuffer(buf){
+  const bytes = new Uint8Array(buf);
+  // Quita la marca BOM de UTF-8 si viene, así el primer encabezado no se ensucia.
+  let start = 0;
+  if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) start = 3;
+  const body = start ? bytes.subarray(start) : bytes;
+  let txt = '';
+  try {
+    txt = new TextDecoder('utf-8', { fatal: false }).decode(body);
+  } catch (e) {
+    txt = String.fromCharCode.apply(null, body);
+  }
+  // Si la decodificación UTF-8 dejó caracteres de reemplazo, el archivo casi seguro
+  // viene en Windows-1252 (muy común en exportaciones de Excel en español).
+  if (txt.indexOf('\uFFFD') >= 0) {
+    try { txt = new TextDecoder('windows-1252', { fatal: false }).decode(body); } catch (e) { /* se queda el anterior */ }
+  }
+  return txt;
+}
+function readWorkbookFromBuffer(buf, fileName, mimeType){
+  if (looksLikeTextFile(fileName, mimeType)) {
+    const txt = decodeTextBuffer(buf);
+    const FS = detectDelimiter(txt);
+    // raw:true deja los valores como texto tal cual vienen en el CSV: evita que
+    // fechas dd/mm/aaaa se interpreten al estilo mm/dd/aaaa. Las conversiones
+    // posteriores las hacen toDateSafe() y toNumber().
+    return XLSX.read(txt, { type: 'string', raw: true, cellDates: false, dense: true, FS: FS });
+  }
+  return XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+}
 async function parseFile(file, datasetDef){
   const buf=await file.arrayBuffer();
-  const wb=XLSX.read(buf,{type:'array',cellDates:true,dense:true});
+  const wb=readWorkbookFromBuffer(buf, file && file.name, file && file.type);
   const sheetName=wb.SheetNames[0];
   const ws=wb.Sheets[sheetName];
   const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
   if(!aoa.length) throw new Error('El archivo está vacío.');
 
-  let headerRowIdx=0, bestScore=-1;
-  const allAliases=new Set();
-  Object.values(datasetDef.fields).forEach(arr=>arr.forEach(a=>allAliases.add(normHeader(a))));
-  for(let i=0;i<Math.min(aoa.length,10);i++){
-    let score=0;
-    aoa[i].forEach(c=>{ if(allAliases.has(normHeader(c))) score++; });
-    if(score>bestScore){bestScore=score; headerRowIdx=i;}
-  }
-  const headerIndex=new Map();
-  aoa[headerRowIdx].forEach((h,idx)=>{ const nh=normHeader(h); if(nh && !headerIndex.has(nh)) headerIndex.set(nh,idx); });
-
-  const rows=[];
-  for(let r=headerRowIdx+1;r<aoa.length;r++){
-    const raw=aoa[r];
-    if(!raw || raw.every(c=>c===''||c===null||c===undefined)) continue;
-    rows.push(mapRowToFields(raw,headerIndex,datasetDef.fields));
-  }
-  return rows;
+  return parseRowsFromAOA(aoa, datasetDef);
 }
 
 /* =========================================================================
@@ -929,42 +990,12 @@ function reporteCardHTML(d, loaded) {
 
   html += '<div class="status-row">';
   if (loaded) {
-    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas' + (nBatches > 1 ? ' · ' + nBatches + ' cargues' : '') + '</span>';
+    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas' + (nBatches > 0 ? ' · ' + fmtInt(nBatches) + (nBatches === 1 ? ' cargue' : ' cargues') : '') + '</span>';
     html += '<button class="clear" data-key="' + d.key + '">Borrar acumulado</button>';
   } else {
     html += '<span class="empty">Sin cargar</span><span></span>';
   }
   html += '</div>';
-
-  if (loaded && loaded.fileName) {
-    html += '<div class="filename">Último archivo: ' + loaded.fileName + '</div>';
-  }
-
-  if (loaded && loaded.batches && loaded.batches.length) {
-    const last = loaded.batches.slice(-3);
-    const parts = [];
-    for (let i = last.length - 1; i >= 0; i--) {
-      const b = last[i];
-      const n = (b.addedCount !== undefined ? b.addedCount : b.rowCount);
-      parts.push(b.fileName + ' (+' + fmtInt(n) + ')');
-    }
-    html += '<div class="filename" style="margin-top:4px;">' + parts.join(' · ') + (loaded.batches.length > 3 ? ' · …' : '') + '</div>';
-  }
-
-  if (_driveFilesReporte.length > 0) {
-    html += '<div class="drive-file-list">';
-    for (let i = 0; i < _driveFilesReporte.length; i++) {
-      const f = _driveFilesReporte[i];
-      html += '<div class="drive-file-item">';
-      html += '<span class="fname">📄 ' + f.name + '</span>';
-      if (f.modifiedTime) {
-        const dt = new Date(f.modifiedTime);
-        html += '<span class="fdate">' + dt.toLocaleDateString('es') + ' ' + dt.toLocaleTimeString('es', {hour:'2-digit',minute:'2-digit'}) + '</span>';
-      }
-      html += '</div>';
-    }
-    html += '</div>';
-  }
 
   if (loaded && loaded.updatedAt) {
     const sd = new Date(loaded.updatedAt);
@@ -1091,6 +1122,7 @@ function trasladosCardHTML(d, loaded) {
 /* ---------- Tarjeta "Inventario Físico": solo Google Drive (reemplaza, no acumula) ---------- */
 function invFisicoCardHTML(d, loaded) {
   const syncing = _driveSyncingInvFisico;
+  const nBatches = loaded && loaded.batches ? loaded.batches.length : (loaded ? 1 : 0);
   let html = '';
 
   html += '<h3>' + d.title + ' <span class="drive-badge">☁️ solo Google Drive</span></h3>';
@@ -1111,31 +1143,12 @@ function invFisicoCardHTML(d, loaded) {
 
   html += '<div class="status-row">';
   if (loaded) {
-    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas</span>';
-    html += '<button class="clear" data-key="' + d.key + '">Quitar</button>';
+    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas' + (nBatches > 0 ? ' · ' + fmtInt(nBatches) + (nBatches === 1 ? ' cargue' : ' cargues') : '') + '</span>';
+    html += '<button class="clear" data-key="' + d.key + '">Borrar acumulado</button>';
   } else {
     html += '<span class="empty">Sin cargar</span><span></span>';
   }
   html += '</div>';
-
-  if (loaded && loaded.fileName) {
-    html += '<div class="filename">Archivo: ' + escapeHtmlTxt(loaded.fileName) + '</div>';
-  }
-
-  if (_driveFilesInvFisico.length > 0) {
-    html += '<div class="drive-file-list">';
-    for (let i = 0; i < _driveFilesInvFisico.length; i++) {
-      const f = _driveFilesInvFisico[i];
-      html += '<div class="drive-file-item">';
-      html += '<span class="fname">📄 ' + escapeHtmlTxt(f.name) + '</span>';
-      if (f.modifiedTime) {
-        const dt = new Date(f.modifiedTime);
-        html += '<span class="fdate">' + dt.toLocaleDateString('es') + ' ' + dt.toLocaleTimeString('es', {hour:'2-digit',minute:'2-digit'}) + '</span>';
-      }
-      html += '</div>';
-    }
-    html += '</div>';
-  }
 
   if (loaded && loaded.updatedAt) {
     const sd = new Date(loaded.updatedAt);
@@ -1148,6 +1161,7 @@ function invFisicoCardHTML(d, loaded) {
 /* ---------- Tarjeta "Facturas": solo Google Drive (reemplaza, no acumula) ---------- */
 function facturasCardHTML(d, loaded) {
   const syncing = _driveSyncingFacturas;
+  const nBatches = loaded && loaded.batches ? loaded.batches.length : (loaded ? 1 : 0);
   let html = '';
 
   html += '<h3>' + d.title + ' <span class="drive-badge">☁️ solo Google Drive</span></h3>';
@@ -1168,31 +1182,12 @@ function facturasCardHTML(d, loaded) {
 
   html += '<div class="status-row">';
   if (loaded) {
-    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas</span>';
-    html += '<button class="clear" data-key="' + d.key + '">Quitar</button>';
+    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas' + (nBatches > 0 ? ' · ' + fmtInt(nBatches) + (nBatches === 1 ? ' cargue' : ' cargues') : '') + '</span>';
+    html += '<button class="clear" data-key="' + d.key + '">Borrar acumulado</button>';
   } else {
     html += '<span class="empty">Sin cargar</span><span></span>';
   }
   html += '</div>';
-
-  if (loaded && loaded.fileName) {
-    html += '<div class="filename">Archivo: ' + escapeHtmlTxt(loaded.fileName) + '</div>';
-  }
-
-  if (_driveFilesFacturas.length > 0) {
-    html += '<div class="drive-file-list">';
-    for (let i = 0; i < _driveFilesFacturas.length; i++) {
-      const f = _driveFilesFacturas[i];
-      html += '<div class="drive-file-item">';
-      html += '<span class="fname">📄 ' + escapeHtmlTxt(f.name) + '</span>';
-      if (f.modifiedTime) {
-        const dt = new Date(f.modifiedTime);
-        html += '<span class="fdate">' + dt.toLocaleDateString('es') + ' ' + dt.toLocaleTimeString('es', {hour:'2-digit',minute:'2-digit'}) + '</span>';
-      }
-      html += '</div>';
-    }
-    html += '</div>';
-  }
 
   if (loaded && loaded.updatedAt) {
     const sd = new Date(loaded.updatedAt);
@@ -1414,7 +1409,7 @@ async function syncInventarioFromDrive() {
 
     // Step 4: Download and parse
     const arrayBuffer = await downloadDriveFile(accessToken, excelFile.id, excelFile.mimeType);
-    const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: true, dense: true });
+    const wb = readWorkbookFromBuffer(arrayBuffer, excelFile.name, excelFile.mimeType);
     const sheetName = wb.SheetNames[0];
     const ws = wb.Sheets[sheetName];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
@@ -1496,7 +1491,7 @@ async function syncReporteFromDrive() {
       let rows;
       try {
         const buf = await downloadDriveFile(accessToken, f.id, f.mimeType);
-        const wb = XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+        const wb = readWorkbookFromBuffer(buf, f.name, f.mimeType);
         const ws = wb.Sheets[wb.SheetNames[0]];
         const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
         if (!aoa.length) continue;
@@ -1587,7 +1582,7 @@ async function syncHomologoFromDrive() {
 
     showToast('Leyendo desde Drive: ' + newest.name + '…');
     const buf = await downloadDriveFile(accessToken, newest.id, newest.mimeType);
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+    const wb = readWorkbookFromBuffer(buf, newest.name, newest.mimeType);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
@@ -1636,7 +1631,7 @@ async function syncTrasladosFromDrive() {
 
     showToast('Leyendo desde Drive: ' + newest.name + '…');
     const buf = await downloadDriveFile(accessToken, newest.id, newest.mimeType);
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+    const wb = readWorkbookFromBuffer(buf, newest.name, newest.mimeType);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
@@ -1685,7 +1680,7 @@ async function syncFacturasFromDrive() {
 
     showToast('Leyendo desde Drive: ' + newest.name + '…');
     const buf = await downloadDriveFile(accessToken, newest.id, newest.mimeType);
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+    const wb = readWorkbookFromBuffer(buf, newest.name, newest.mimeType);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
@@ -1734,7 +1729,7 @@ async function syncInvFisicoFromDrive() {
 
     showToast('Leyendo desde Drive: ' + newest.name + '…');
     const buf = await downloadDriveFile(accessToken, newest.id, newest.mimeType);
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true, dense: true });
+    const wb = readWorkbookFromBuffer(buf, newest.name, newest.mimeType);
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
@@ -2066,8 +2061,10 @@ function renderUploadCards(){
 // Clave de deduplicación para el cargue acumulativo del Reporte de Dispensación:
 // identifica una misma línea aunque se vuelva a cargar el mismo día/archivo.
 function reporteRowDedupKey(r){
-  const f = r.fechaDispensacion instanceof Date ? r.fechaDispensacion.toISOString() : r.fechaDispensacion;
-  return [r.documento, r.codigoArticulo, r.bodegaDetalle, f, r.unidades, r.cantidadAutorizada]
+  // La fecha y las cantidades se normalizan para que una misma línea leída desde
+  // .xlsx (valores nativos) o desde .csv (texto) genere exactamente la misma clave.
+  const f = dateToISO(toDateSafe(r.fechaDispensacion));
+  return [r.documento, r.codigoArticulo, r.bodegaDetalle, f, toNumber(r.unidades), toNumber(r.cantidadAutorizada)]
     .map(v => String(v===undefined||v===null?'':v).trim().toUpperCase())
     .join('|');
 }
