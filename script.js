@@ -170,8 +170,9 @@ const DATASETS = [
       usuarioCreacion: ['USUARIO CREACION','USUARIO CREACIÓN','USUARIO DE CREACION','USUARIO DE CREACIÓN','USUARIO CREADOR','USUARIO'],
       fechaDispensacion: ['FECHA DE DISPENSACION','FECHA DISPENSACION','FECHA DISPENSACIÓN','FECHA DISPENSA','FECHA'],
       // La columna de EPS puede venir con el nombre largo del archivo original:
-      // "Sigla Comercial Cliente/EPS(Entidad OutSorcing)" (con o sin espacios/paréntesis).
-      eps: ['EPS','SIGLA COMERCIAL CLIENTE/EPS(ENTIDAD OUTSORCING)','SIGLA COMERCIAL CLIENTE/EPS (ENTIDAD OUTSORCING)','SIGLA COMERCIAL CLIENTE/EPS(ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS (ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS','SIGLA COMERCIAL DEL CLIENTE/EPS','SIGLA COMERCIAL CLIENTE','SIGLA COMERCIAL DEL CLIENTE','SIGLA COMERCIAL','ENTIDAD OUTSORCING','ENTIDAD OUTSOURCING'],
+      // "Sigla Comercial Cliente/EPS(Entidad OutSorcing)" (con o sin espacios/paréntesis),
+      // o abreviada como "EPS(Entidad OutSorcing)".
+      eps: ['EPS','EPS(ENTIDAD OUTSORCING)','EPS (ENTIDAD OUTSORCING)','EPS(ENTIDAD OUTSOURCING)','EPS (ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS(ENTIDAD OUTSORCING)','SIGLA COMERCIAL CLIENTE/EPS (ENTIDAD OUTSORCING)','SIGLA COMERCIAL CLIENTE/EPS(ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS (ENTIDAD OUTSOURCING)','SIGLA COMERCIAL CLIENTE/EPS','SIGLA COMERCIAL DEL CLIENTE/EPS','SIGLA COMERCIAL CLIENTE','SIGLA COMERCIAL DEL CLIENTE','SIGLA COMERCIAL','ENTIDAD OUTSORCING','ENTIDAD OUTSOURCING'],
       contrato: ['CONTRATO'],
       // "Codigo" del reporte = "Codigo Articulo" del archivo original.
       codigoArticulo: ['CODIGO ARTICULO','CODIGO DE ARTICULO','CODIGO ARTÍCULO','CÓDIGO ARTICULO','CÓDIGO ARTÍCULO','CODIGO','CÓDIGO','CODIGO ARTICLE','COD ARTICULO','COD. ARTICULO','COD ARTICLE','ID ARTICULO'],
@@ -589,6 +590,10 @@ function stopFirestoreListener(){
    ========================================================================= */
 function stripAccents(s){return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g,'');}
 function normHeader(s){return stripAccents(String(s||'')).toUpperCase().replace(/\s+/g,' ').trim();}
+/* Version "compacta" del nombre de una columna: solo letras y numeros. Permite que
+   "EPS(Entidad OutSorcing)", "EPS (ENTIDAD OUTSORCING)" y "eps entidad outsorcing"
+   se reconozcan como la MISMA columna, sin tener que listar cada variante. */
+function compactHeader(s){return normHeader(s).replace(/[^A-Z0-9]/g,'');}
 function normValue(s){if(s===null||s===undefined)return '';return stripAccents(String(s)).toUpperCase().trim();}
 /* Códigos que NO corresponden a un medicamento (servicios, cobros, domicilios, etc.).
    Aunque la columna Diferencia sea negativa, estas líneas no se cuentan como pendientes
@@ -641,30 +646,75 @@ function showToast(msg,isError){
 /* =========================================================================
    4. Parseo de archivos
    ========================================================================= */
-// Palabras clave de respaldo: si ninguno de los alias exactos existe en el archivo,
-// se busca cualquier encabezado que CONTENGA estas palabras. Evita que un cambio de
-// nombre en el archivo original (p. ej. "Estado dispensa 2024") deje el campo vacío.
+/* Palabras clave de respaldo: si ninguno de los alias exactos existe en el archivo,
+   se busca un encabezado parecido. Se usan textos LARGOS y específicos a propósito:
+   el archivo del Reporte trae unas 130 columnas y muchas comparten palabras
+   ("Codigo Barras", "Estado de Facturacion", "Usuario Modificacion", "Bodega Origen"),
+   así que una palabra suelta como "CODIGO" tomaría la columna equivocada y los datos
+   quedarían mezclados. */
 const FIELD_FALLBACK_KEYWORDS = {
-  codigoCie10: ['DESCRIPCION CIE','DESCRIPCIÓN CIE','CIE 10','CIE10','CIE-10','CIE','DIAGNOSTIC'],
-  estadoDispensa: ['ESTADO'],
-  usuarioCreacion: ['USUARIO'],
-  bodegaDetalle: ['BODEGA'],
-  fechaDispensacion: ['FECHA DISPENS', 'FECHA DE DISPENS'],
-  cantidadAutorizada: ['AUTORIZAD'],
-  soportes: ['SOPORTE'],
+  codigoCie10: ['DESCRIPCION CIE 10','DESCRIPCION CIE','CIE 10','CIE10','CIE-10','DESCRIPCION DIAGNOSTICO'],
+  estadoDispensa: ['ESTADO DISPENSA','ESTADO DE LA DISPENSA','ESTADO DE DISPENSA'],
+  usuarioCreacion: ['USUARIO CREACION','USUARIO DE CREACION','USUARIO CREADOR'],
+  bodegaDetalle: ['BODEGA DETALLE','BODEGA'],
+  fechaDispensacion: ['FECHA DISPENS','FECHA DE DISPENS'],
+  cantidadAutorizada: ['CANTIDAD AUTORIZADA','CANT AUTORIZADA','CANTIDAD AUTORIZ'],
+  soportes: ['CANTIDAD SOPORTES','CANTIDAD DE SOPORTES','CANTIDAD SOPORTE'],
   documento: ['DOCUMENTO'],
-  eps: ['SIGLA COMERCIAL','ENTIDAD OUTSORCING','ENTIDAD OUTSOURCING','EPS'],
-  codigoArticulo: ['CODIGO ARTICULO','CODIGO DE ARTICULO','CODIGO'],
-  unidades: ['UNIDADES'],
-  descripcion: ['DESCRIPCION ARTICULO','DESCRIPCION'],
+  eps: ['EPS(ENTIDAD OUTSORCING)','EPS (ENTIDAD OUTSORCING)','ENTIDAD OUTSORCING','ENTIDAD OUTSOURCING','SIGLA COMERCIAL CLIENTE','SIGLA COMERCIAL'],
+  codigoArticulo: ['CODIGO ARTICULO','CODIGO DE ARTICULO','COD ARTICULO','ID ARTICULO'],
+  unidades: ['UNIDADES DISPENSADAS','UNIDADES'],
+  descripcion: ['DESCRIPCION ARTICULO','NOMBRE ARTICULO'],
   contrato: ['CONTRATO'],
   diferencia: ['DIFERENCIA']
 };
+/* Busca una columna por palabra clave, pero SIEMPRE prefiriendo la coincidencia más
+   precisa. En un archivo con ~130 columnas hay muchos encabezados que contienen
+   "ESTADO", "CODIGO", "FECHA" o "DESCRIPCION", así que se revisa en este orden:
+     1) el encabezado es exactamente la palabra buscada,
+     2) el encabezado EMPIEZA por la palabra buscada,
+     3) el encabezado contiene la palabra buscada (último recurso).
+   Así "Estado" gana sobre "Estado de facturación" y no se toma una columna vecina. */
 function findHeaderByKeyword(headerIndex, keywords){
   for (const kw of keywords){
+    const objetivo = compactHeader(kw);
+    if (!objetivo) continue;
+    let porInicio = -1, porContenido = -1;
     for (const h of headerIndex.keys()){
-      if (h.includes(kw)) return headerIndex.get(h);
+      const ch = compactHeader(h);
+      if (ch === objetivo) return headerIndex.get(h);
+      if (porInicio < 0 && ch.startsWith(objetivo)) porInicio = headerIndex.get(h);
+      if (porContenido < 0 && ch.includes(objetivo)) porContenido = headerIndex.get(h);
     }
+    if (porInicio >= 0) return porInicio;
+    if (porContenido >= 0) return porContenido;
+  }
+  return -1;
+}
+/* Índice de encabezados del archivo: nombre de columna → posición.
+   Se guarda además una versión "compacta" (sin espacios, puntos ni paréntesis) para
+   que "EPS(Entidad OutSorcing)" y "EPS (ENTIDAD OUTSORCING)" se reconozcan igual. */
+function buildHeaderIndex(headerRow){
+  const idx = new Map();
+  const compact = new Map();
+  (headerRow || []).forEach((h, i) => {
+    const nh = normHeader(h);
+    if (!nh) return;
+    if (!idx.has(nh)) idx.set(nh, i);
+    const ch = compactHeader(h);
+    if (ch && !compact.has(ch)) compact.set(ch, i);
+  });
+  idx.compact = compact;
+  return idx;
+}
+/* Ubica una columna por su nombre: primero tal cual, luego en versión compacta. */
+function headerLookup(headerIndex, nombreColumna){
+  const nh = normHeader(nombreColumna);
+  if (headerIndex.has(nh)) return headerIndex.get(nh);
+  const compact = headerIndex.compact;
+  if (compact){
+    const ch = compactHeader(nombreColumna);
+    if (ch && compact.has(ch)) return compact.get(ch);
   }
   return -1;
 }
@@ -690,8 +740,8 @@ const COLUMNAS_OBLIGATORIAS = {
    datos: primero los nombres exactos (alias) y luego el respaldo por palabra clave. */
 function columnaDeCampo(fieldName, aliases, headerIndex){
   for (const alias of (aliases || [])){
-    const key = normHeader(alias);
-    if (headerIndex.has(key)) return headerIndex.get(key);
+    const col = headerLookup(headerIndex, alias);
+    if (col >= 0) return col;
   }
   if (FIELD_FALLBACK_KEYWORDS[fieldName]){
     const col = findHeaderByKeyword(headerIndex, FIELD_FALLBACK_KEYWORDS[fieldName]);
@@ -743,10 +793,10 @@ function mapRowToFields(rawRow, headerIndex, fieldsDef){
   for (const fieldName in fieldsDef){
     let val='', matched=false;
     for (const alias of fieldsDef[fieldName]){
-      const key=normHeader(alias);
-      if (headerIndex.has(key)){
+      const col=headerLookup(headerIndex, alias);
+      if (col>=0){
         matched=true;
-        const col=headerIndex.get(key); val=rawRow[col];
+        val=rawRow[col];
         if (val!==undefined && val!==null && val!=='') break;
       }
     }
@@ -1549,7 +1599,10 @@ async function syncReporteFromDrive() {
       : (existing ? [{ fileName: existing.fileName, rowCount: prevRows.length, addedCount: prevRows.length, uploadedAt: existing.updatedAt }] : []);
 
     const seen = new Map();
-    prevRows.forEach(r => { const k = dedupKeyFor(KEY, r); if(!seen.has(k)) seen.set(k, r); });
+    // Al reconstruir el acumulado se numeran las líneas repetidas igual que al leer un
+    // archivo, para que las repeticiones legítimas de un mismo documento se conserven.
+    const contadorPrevio = nuevoContadorRepeticiones();
+    prevRows.forEach(r => { const k = dedupKeyFor(KEY, r, contadorPrevio); if(!seen.has(k)) seen.set(k, r); });
     const merged = prevRows.slice();
     const batches = prevBatches.slice();
 
@@ -1580,12 +1633,15 @@ async function syncReporteFromDrive() {
       if (!rows || !rows.length) continue;
 
       let added = 0, skipped = 0, reparadas = 0, soportesNuevos = 0;
+      // Numeración de repeticiones propia de este archivo: si el archivo trae la misma
+      // línea tres veces, se comparan una a una con las tres del acumulado.
+      const contador = nuevoContadorRepeticiones();
       // La fecha de cargue es la fecha REAL del archivo en Drive (última modificación),
       // NO el momento de sincronizar: así cada archivo cae en el corte que le corresponde
       // (1-10 / 11-20 / 21-31) y los cambios entre cargues se ven de un corte a otro.
       const nowISO = f.modifiedTime ? new Date(f.modifiedTime).toISOString() : new Date().toISOString();
       for (let j = 0; j < rows.length; j++) {
-        const k = dedupKeyFor(KEY, rows[j]);
+        const k = dedupKeyFor(KEY, rows[j], contador);
         if (seen.has(k)) {
           skipped++;
           const prevRow = seen.get(k);
@@ -1623,8 +1679,12 @@ async function syncReporteFromDrive() {
 
     await idbPut({ key: KEY, rows: merged, fileName: lastFileName || (existing && existing.fileName) || '', batches, updatedAt: new Date().toISOString() });
 
-    showToast('"' + def.title + '" sincronizado desde Drive: +' + fmtInt(totalAdded) + ' filas nuevas'
-      + (totalSkipped ? (' (' + fmtInt(totalSkipped) + ' ya existían, se omitieron)') : '')
+    // Resumen claro: cuántas líneas se leyeron en total, cuántas eran nuevas y cuántas
+    // ya estaban cargadas. Como la sincronización vuelve a leer TODOS los archivos de
+    // la carpeta, es normal que la cifra de "ya cargadas" sea alta.
+    showToast('"' + def.title + '" sincronizado desde Drive: +' + fmtInt(totalAdded) + ' filas nuevas de '
+      + fmtInt(totalAdded + totalSkipped) + ' leídas en ' + fmtInt(ordered.length - omitidos.length) + ' archivo(s)'
+      + (totalSkipped ? (' (' + fmtInt(totalSkipped) + ' ya estaban cargadas)') : '')
       + (totalReparadas ? (' · ' + fmtInt(totalReparadas) + ' filas actualizadas con Estado/Usuario') : '')
       + (totalSoportesNuevos ? (' · ' + fmtInt(totalSoportesNuevos) + ' líneas que ahora SÍ traen soporte') : '')
       + '. Total acumulado: ' + fmtInt(merged.length) + ' filas.' + avisoOmitidos, omitidos.length > 0);
@@ -2028,14 +2088,13 @@ function clearDriveError(which) {
 function parseRowsFromAOA(aoa, datasetDef, fileName) {
   let headerRowIdx = 0, bestScore = -1;
   const allAliases = new Set();
-  Object.values(datasetDef.fields).forEach(arr => arr.forEach(a => allAliases.add(normHeader(a))));
+  Object.values(datasetDef.fields).forEach(arr => arr.forEach(a => allAliases.add(compactHeader(a))));
   for (let i = 0; i < Math.min(aoa.length, 10); i++) {
     let score = 0;
-    (aoa[i] || []).forEach(c => { if (allAliases.has(normHeader(c))) score++; });
+    (aoa[i] || []).forEach(c => { if (allAliases.has(compactHeader(c))) score++; });
     if (score > bestScore) { bestScore = score; headerRowIdx = i; }
   }
-  const headerIndex = new Map();
-  (aoa[headerRowIdx] || []).forEach((h, idx) => { const nh = normHeader(h); if (nh && !headerIndex.has(nh)) headerIndex.set(nh, idx); });
+  const headerIndex = buildHeaderIndex(aoa[headerRowIdx]);
   // Antes de leer una sola fila comprobamos que el archivo traiga las columnas
   // obligatorias. Si no, se avisa con nombre y no se importa nada: así no entran
   // filas vacías al acumulado ni aparecen totales que no cuadran.
@@ -2153,16 +2212,29 @@ function renderUploadCards(){
 
 // Clave de deduplicación para el cargue acumulativo del Reporte de Dispensación:
 // identifica una misma línea aunque se vuelva a cargar el mismo día/archivo.
+// Se usan varios datos de la línea (no solo el documento y el código) porque un mismo
+// documento puede tener varias líneas parecidas: si la clave es muy corta, líneas
+// distintas se confunden entre sí y el archivo nuevo aparece como "0 filas nuevas".
 function reporteRowDedupKey(r){
   // La fecha y las cantidades se normalizan para que una misma línea leída desde
   // .xlsx (valores nativos) o desde .csv (texto) genere exactamente la misma clave.
   const f = dateToISO(toDateSafe(r.fechaDispensacion));
-  return [r.documento, r.codigoArticulo, r.bodegaDetalle, f, toNumber(r.unidades), toNumber(r.cantidadAutorizada)]
+  return [r.documento, r.codigoArticulo, r.bodegaDetalle, r.contrato, f,
+          toNumber(r.unidades), toNumber(r.cantidadAutorizada), toNumber(r.diferencia)]
     .map(v => String(v===undefined||v===null?'':v).trim().toUpperCase())
     .join('|');
 }
-function dedupKeyFor(key, r){
-  return reporteRowDedupKey(r);
+// Contador de repeticiones: cuando un archivo trae VARIAS líneas realmente iguales
+// (misma fórmula repetida en el mismo documento), cada una recibe su propio número
+// de orden (#1, #2, #3...). Así se conservan todas, y si se vuelve a cargar el mismo
+// archivo se siguen reconociendo como las mismas y no se duplican.
+function nuevoContadorRepeticiones(){ return new Map(); }
+function dedupKeyFor(key, r, contador){
+  const base = reporteRowDedupKey(r);
+  if (!contador) return base;
+  const n = (contador.get(base) || 0) + 1;
+  contador.set(base, n);
+  return base + '#' + n;
 }
 
 async function handleFileSelected(key,file){
@@ -2181,15 +2253,19 @@ async function handleFileSelected(key,file){
         ? existing.batches
         : (existing ? [{fileName:existing.fileName, rowCount:prevRows.length, addedCount:prevRows.length, uploadedAt:existing.updatedAt}] : []);
       const seen = new Map();
-      prevRows.forEach(r => { const k = dedupKeyFor(key, r); if(!seen.has(k)) seen.set(k, r); });
+      // Se numeran las repeticiones del acumulado igual que las del archivo nuevo, para
+      // que las líneas repetidas legítimas (misma fórmula varias veces) no se pierdan.
+      const contadorPrevio = nuevoContadorRepeticiones();
+      prevRows.forEach(r => { const k = dedupKeyFor(key, r, contadorPrevio); if(!seen.has(k)) seen.set(k, r); });
       const merged = prevRows.slice();
       // La fecha de cargue es la fecha REAL del archivo (última modificación), no el
       // momento de subirlo: así cada archivo cae en el corte que le corresponde y un
       // recargue posterior sí se ve como cambio de un corte a otro.
       const nowISO = (file && file.lastModified ? new Date(file.lastModified) : new Date()).toISOString();
       let added=0, skipped=0, reparadas=0, soportesNuevos=0;
+      const contador = nuevoContadorRepeticiones();
       rows.forEach(r=>{
-        const k=dedupKeyFor(key,r);
+        const k=dedupKeyFor(key,r,contador);
         if(seen.has(k)){
           skipped++;
           const prevRow=seen.get(k);
@@ -2208,7 +2284,7 @@ async function handleFileSelected(key,file){
       });
       const batches = prevBatches.concat([{fileName:file.name, rowCount:rows.length, addedCount:added, skippedCount:skipped, uploadedAt:new Date().toISOString()}]);
       await idbPut({key, rows:merged, fileName:file.name, batches, updatedAt:new Date().toISOString()});
-      showToast('"'+def.title+'": +'+fmtInt(added)+' filas nuevas'+(skipped?(' ('+fmtInt(skipped)+' ya existían, se omitieron)'):'')+(reparadas?(' · '+fmtInt(reparadas)+' filas actualizadas con Estado/Usuario'):'')+(soportesNuevos?(' · '+fmtInt(soportesNuevos)+' líneas que ahora SÍ traen soporte'):'')+'. Total acumulado: '+fmtInt(merged.length)+' filas.');
+      showToast('"'+def.title+'": +'+fmtInt(added)+' filas nuevas de '+fmtInt(rows.length)+' leídas'+(skipped?(' ('+fmtInt(skipped)+' ya estaban cargadas)'):'')+(reparadas?(' · '+fmtInt(reparadas)+' filas actualizadas con Estado/Usuario'):'')+(soportesNuevos?(' · '+fmtInt(soportesNuevos)+' líneas que ahora SÍ traen soporte'):'')+'. Total acumulado: '+fmtInt(merged.length)+' filas.');
     }else{
       await idbPut({key, rows, fileName:file.name, updatedAt:new Date().toISOString()});
       showToast('"'+def.title+'" cargado: '+fmtInt(rows.length)+' filas.');
