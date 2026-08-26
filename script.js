@@ -227,8 +227,8 @@ const DATASETS = [
     fields: { sigla: ['SIGLA COMERCIAL DEL CLIENTE','SIGLA COMERCIAL CLIENTE','SIGLA'] }
   },
   {
-    key: 'traslados', tabla: 'Tabla_8', title: 'Traslados', required: false,
-    desc: 'Traslados entre bodegas realizados por cada usuario. Los datos provienen exclusivamente de la carpeta de Google Drive y se reemplazan por completo en cada sincronización. El Codigo se cruza con la tabla Homólogo para saber si la molécula es Pareto o No Pareto.',
+    key: 'traslados', tabla: 'Tabla_8', title: 'Traslados', required: false, accumulate: true,
+    desc: 'Traslados entre bodegas realizados por cada usuario. Los datos provienen exclusivamente de la carpeta de Google Drive y se ACUMULAN: cada sincronización suma los traslados nuevos y no borra lo ya cargado. El Codigo se cruza con la tabla Homólogo para saber si la molécula es Pareto o No Pareto.',
     cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Usuario'],
     fields: {
       traslado: ['TRASLADO','NRO TRASLADO','NUMERO TRASLADO','NÚMERO TRASLADO','No TRASLADO','DOCUMENTO TRASLADO','DOCUMENTO','CONSECUTIVO'],
@@ -242,8 +242,8 @@ const DATASETS = [
     }
   },
   {
-    key: 'facturas', tabla: 'Tabla_9', title: 'Facturas', required: false,
-    desc: 'Facturas por punto de venta. Los datos provienen exclusivamente de la carpeta de Google Drive y se reemplazan por completo en cada sincronización. El Codigo se cruza con la tabla Homólogo para saber si el código está homologado o no.',
+    key: 'facturas', tabla: 'Tabla_9', title: 'Facturas', required: false, accumulate: true,
+    desc: 'Facturas por punto de venta. Los datos provienen exclusivamente de la carpeta de Google Drive y se ACUMULAN: cada sincronización suma las facturas nuevas y no borra lo ya cargado. El Codigo se cruza con la tabla Homólogo para saber si el código está homologado o no.',
     cols: ['Fecha Factura','Factura','Codigo','Descripcion','Cantidad','Punto de venta'],
     fields: {
       fechaFactura: ['FECHA FACTURA','FECHA DE FACTURA','FECHA DE LA FACTURA','FECHA FACTURACION','FECHA FACTURACIÓN','FECHA'],
@@ -1182,9 +1182,10 @@ function homologoCardHTML(d, loaded) {
   return html;
 }
 
-/* ---------- Tarjeta "Traslados": solo Google Drive (reemplaza, no acumula) ---------- */
+/* ---------- Tarjeta "Traslados": solo Google Drive (ACUMULATIVA) ---------- */
 function trasladosCardHTML(d, loaded) {
   const syncing = _driveSyncingTraslados;
+  const nBatches = loaded && loaded.batches ? loaded.batches.length : (loaded ? 1 : 0);
   let html = '';
 
   html += '<h3>' + d.title + ' <span class="drive-badge">☁️ solo Google Drive</span></h3>';
@@ -1205,36 +1206,13 @@ function trasladosCardHTML(d, loaded) {
 
   html += '<div class="status-row">';
   if (loaded) {
-    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas</span>';
-    html += '<button class="clear" data-key="' + d.key + '">Quitar</button>';
+    // Solo dos datos: cuántas líneas hay acumuladas y en cuántos cargues llegaron
+    html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas' + (nBatches > 0 ? ' · ' + fmtInt(nBatches) + (nBatches === 1 ? ' cargue' : ' cargues') : '') + '</span>';
+    html += '<button class="clear" data-key="' + d.key + '">Borrar acumulado</button>';
   } else {
     html += '<span class="empty">Sin cargar</span><span></span>';
   }
   html += '</div>';
-
-  if (loaded && loaded.fileName) {
-    html += '<div class="filename">Archivo: ' + escapeHtmlTxt(loaded.fileName) + '</div>';
-  }
-
-  if (_driveFilesTraslados.length > 0) {
-    html += '<div class="drive-file-list">';
-    for (let i = 0; i < _driveFilesTraslados.length; i++) {
-      const f = _driveFilesTraslados[i];
-      html += '<div class="drive-file-item">';
-      html += '<span class="fname">📄 ' + escapeHtmlTxt(f.name) + '</span>';
-      if (f.modifiedTime) {
-        const dt = new Date(f.modifiedTime);
-        html += '<span class="fdate">' + dt.toLocaleDateString('es') + ' ' + dt.toLocaleTimeString('es', {hour:'2-digit',minute:'2-digit'}) + '</span>';
-      }
-      html += '</div>';
-    }
-    html += '</div>';
-  }
-
-  if (loaded && loaded.updatedAt) {
-    const sd = new Date(loaded.updatedAt);
-    html += '<div class="drive-last-sync">Última sincronización: <b>' + sd.toLocaleDateString('es') + ' ' + sd.toLocaleTimeString('es', {hour:'2-digit',minute:'2-digit'}) + '</b></div>';
-  }
 
   return html;
 }
@@ -1278,7 +1256,7 @@ function invFisicoCardHTML(d, loaded) {
   return html;
 }
 
-/* ---------- Tarjeta "Facturas": solo Google Drive (reemplaza, no acumula) ---------- */
+/* ---------- Tarjeta "Facturas": solo Google Drive (ACUMULATIVA) ---------- */
 function facturasCardHTML(d, loaded) {
   const syncing = _driveSyncingFacturas;
   const nBatches = loaded && loaded.batches ? loaded.batches.length : (loaded ? 1 : 0);
@@ -1302,17 +1280,13 @@ function facturasCardHTML(d, loaded) {
 
   html += '<div class="status-row">';
   if (loaded) {
+    // Solo dos datos: cuántas líneas hay acumuladas y en cuántos cargues llegaron
     html += '<span class="rows">✓ ' + fmtInt(loaded.rowCount) + ' filas' + (nBatches > 0 ? ' · ' + fmtInt(nBatches) + (nBatches === 1 ? ' cargue' : ' cargues') : '') + '</span>';
     html += '<button class="clear" data-key="' + d.key + '">Borrar acumulado</button>';
   } else {
     html += '<span class="empty">Sin cargar</span><span></span>';
   }
   html += '</div>';
-
-  if (loaded && loaded.updatedAt) {
-    const sd = new Date(loaded.updatedAt);
-    html += '<div class="drive-last-sync">Última sincronización: <b>' + sd.toLocaleDateString('es') + ' ' + sd.toLocaleTimeString('es', {hour:'2-digit',minute:'2-digit'}) + '</b></div>';
-  }
 
   return html;
 }
@@ -1751,9 +1725,100 @@ async function syncHomologoFromDrive() {
   }
 }
 
-/* ---------- Sincronización Drive de "Traslados" (REEMPLAZA, no acumula) ----------
-   Lee el archivo más reciente de la carpeta de Drive y sustituye por completo la
-   tabla de traslados. Los datos quedan solo en el almacén local del navegador. */
+/* ---------- Acumulador común para las carpetas de Drive que SUMAN datos ----------
+   Lee TODOS los archivos de la carpeta (del más antiguo al más reciente) y los suma
+   a lo que ya estaba guardado, sin duplicar las líneas que ya se habían cargado.
+   Nunca borra el acumulado: lo único que lo borra es el botón "Borrar acumulado".
+   Devuelve un resumen con lo que se agregó, lo que ya estaba y lo que se omitió. */
+async function acumularCarpetaDrive(accessToken, files, KEY, def) {
+  // Del más antiguo al más reciente, para que el historial de cargues quede en orden
+  const ordered = files.slice().sort((a, b) => String(a.modifiedTime || '').localeCompare(String(b.modifiedTime || '')));
+
+  const existing = await idbGet(KEY);
+  const prevRows = existing ? existing.rows : [];
+  const prevBatches = existing && existing.batches
+    ? existing.batches
+    : (existing ? [{ fileName: existing.fileName, rowCount: prevRows.length, addedCount: prevRows.length, uploadedAt: existing.updatedAt }] : []);
+
+  const seen = new Map();
+  // Las líneas repetidas legítimas (la misma línea varias veces en un documento) se
+  // numeran igual al reconstruir el acumulado y al leer el archivo, para conservarlas.
+  const contadorPrevio = nuevoContadorRepeticiones();
+  prevRows.forEach(r => { const k = dedupKeyFor(KEY, r, contadorPrevio); if (!seen.has(k)) seen.set(k, r); });
+
+  const merged = prevRows.slice();
+  const batches = prevBatches.slice();
+
+  let totalAdded = 0, totalSkipped = 0, lastFileName = '';
+  const omitidos = []; // archivos dejados por fuera (columnas faltantes o ilegibles)
+
+  for (let i = 0; i < ordered.length; i++) {
+    const f = ordered[i];
+    showToast('Leyendo desde Drive: ' + f.name + '…');
+    let rows;
+    try {
+      const buf = await downloadDriveFile(accessToken, f.id, f.mimeType);
+      const wb = readWorkbookFromBuffer(buf, f.name, f.mimeType);
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+      if (!aoa.length) continue;
+      rows = parseRowsFromAOA(aoa, def, f.name);
+    } catch (fileErr) {
+      console.warn('No se pudo leer ' + f.name + ':', fileErr);
+      if (fileErr && fileErr.code === 'COLUMNAS_FALTANTES') {
+        omitidos.push(f.name + ' (faltan: ' + (fileErr.columnasFaltantes || []).join(', ') + ')');
+      } else {
+        omitidos.push(f.name + ' (no se pudo leer)');
+      }
+      continue;
+    }
+    if (!rows || !rows.length) continue;
+
+    // La fecha de cargue es la fecha REAL del archivo en Drive, no el momento de
+    // sincronizar: así cada archivo queda ubicado en el periodo que le corresponde.
+    const nowISO = f.modifiedTime ? new Date(f.modifiedTime).toISOString() : new Date().toISOString();
+    const contador = nuevoContadorRepeticiones();
+    let added = 0, skipped = 0;
+    for (let j = 0; j < rows.length; j++) {
+      const k = dedupKeyFor(KEY, rows[j], contador);
+      if (seen.has(k)) {
+        skipped++;
+        const prevRow = seen.get(k);
+        // Se conserva la fecha del archivo más antiguo en que apareció la línea
+        if (!prevRow._fechaCargue || String(prevRow._fechaCargue) > nowISO) prevRow._fechaCargue = nowISO;
+        // La línea ya estaba: completamos los campos que estuvieran vacíos
+        completarCamposFaltantes(prevRow, rows[j]);
+        continue;
+      }
+      rows[j]._fechaCargue = nowISO;
+      seen.set(k, rows[j]); merged.push(rows[j]); added++;
+    }
+    totalAdded += added; totalSkipped += skipped; lastFileName = f.name;
+
+    // Solo cuenta como "cargue" el archivo que aportó líneas nuevas
+    if (added > 0) {
+      batches.push({ fileName: f.name, rowCount: rows.length, addedCount: added, skippedCount: skipped, uploadedAt: new Date().toISOString() });
+    }
+  }
+
+  return { merged, batches, totalAdded, totalSkipped, omitidos, lastFileName, existing, leidos: ordered.length - omitidos.length };
+}
+
+// Mensaje de resumen común para las carpetas que acumulan
+function mensajeAcumulado(def, res) {
+  const avisoOmitidos = res.omitidos.length
+    ? ' Se omitieron ' + res.omitidos.length + ' archivo(s): ' + res.omitidos.join('; ') + '.'
+    : '';
+  return '"' + def.title + '" sincronizado desde Drive: +' + fmtInt(res.totalAdded) + ' filas nuevas de '
+    + fmtInt(res.totalAdded + res.totalSkipped) + ' leídas en ' + fmtInt(res.leidos) + ' archivo(s)'
+    + (res.totalSkipped ? (' (' + fmtInt(res.totalSkipped) + ' ya estaban cargadas)') : '')
+    + '. Total acumulado: ' + fmtInt(res.merged.length) + ' filas en ' + fmtInt(res.batches.length) + ' cargue(s).'
+    + avisoOmitidos;
+}
+
+/* ---------- Sincronización Drive de "Traslados" (ACUMULATIVA) ----------
+   Suma los traslados nuevos de la carpeta a los que ya estaban cargados; no reemplaza.
+   Los datos quedan solo en el almacén local del navegador. */
 async function syncTrasladosFromDrive() {
   if (_driveSyncingTraslados) return;
   _driveSyncingTraslados = true;
@@ -1771,24 +1836,17 @@ async function syncTrasladosFromDrive() {
 
     _driveFilesTraslados = files.map(f => ({ name: f.name, modifiedTime: f.modifiedTime }));
 
-    const newest = files.slice().sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')))[0];
+    const res = await acumularCarpetaDrive(accessToken, files, KEY, def);
 
-    showToast('Leyendo desde Drive: ' + newest.name + '…');
-    const buf = await downloadDriveFile(accessToken, newest.id, newest.mimeType);
-    const wb = readWorkbookFromBuffer(buf, newest.name, newest.mimeType);
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
-    if (!aoa.length) throw new Error('El archivo está vacío.');
-
-    const rows = parseRowsFromAOA(aoa, def, newest.name);
-    if (!rows.length) {
-      showToast('No se encontraron filas de datos en el archivo de Drive.', true);
+    if (!res.merged.length) {
+      showToast('No se encontraron filas de datos en los archivos de Drive.', true);
       return;
     }
 
-    await idbPut({ key: KEY, rows, fileName: newest.name, batches: null, updatedAt: new Date().toISOString() });
+    await idbPut({ key: KEY, rows: res.merged, fileName: res.lastFileName || (res.existing && res.existing.fileName) || '', batches: res.batches, updatedAt: new Date().toISOString() });
 
-    showToast('"' + def.title + '" sincronizado desde Drive: ' + fmtInt(rows.length) + ' filas (tabla reemplazada).');
+    showToast(mensajeAcumulado(def, res), res.omitidos.length > 0);
+    if (res.omitidos.length) showDriveError('traslados', 'Archivos omitidos: ' + res.omitidos.join('; '));
 
     await refreshStatusFromDB();
   } catch (err) {
@@ -1800,9 +1858,9 @@ async function syncTrasladosFromDrive() {
   }
 }
 
-/* ---------- Sincronización Drive de "Facturas" (REEMPLAZA, no acumula) ----------
-   Lee el archivo más reciente de la carpeta de Drive y sustituye por completo la
-   tabla de facturas. Los datos quedan solo en el almacén local del navegador. */
+/* ---------- Sincronización Drive de "Facturas" (ACUMULATIVA) ----------
+   Suma las facturas nuevas de la carpeta a las que ya estaban cargadas; no reemplaza.
+   Los datos quedan solo en el almacén local del navegador. */
 async function syncFacturasFromDrive() {
   if (_driveSyncingFacturas) return;
   _driveSyncingFacturas = true;
@@ -1820,24 +1878,17 @@ async function syncFacturasFromDrive() {
 
     _driveFilesFacturas = files.map(f => ({ name: f.name, modifiedTime: f.modifiedTime }));
 
-    const newest = files.slice().sort((a, b) => String(b.modifiedTime || '').localeCompare(String(a.modifiedTime || '')))[0];
+    const res = await acumularCarpetaDrive(accessToken, files, KEY, def);
 
-    showToast('Leyendo desde Drive: ' + newest.name + '…');
-    const buf = await downloadDriveFile(accessToken, newest.id, newest.mimeType);
-    const wb = readWorkbookFromBuffer(buf, newest.name, newest.mimeType);
-    const ws = wb.Sheets[wb.SheetNames[0]];
-    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
-    if (!aoa.length) throw new Error('El archivo está vacío.');
-
-    const rows = parseRowsFromAOA(aoa, def, newest.name);
-    if (!rows.length) {
-      showToast('No se encontraron filas de datos en el archivo de Drive.', true);
+    if (!res.merged.length) {
+      showToast('No se encontraron filas de datos en los archivos de Drive.', true);
       return;
     }
 
-    await idbPut({ key: KEY, rows, fileName: newest.name, batches: null, updatedAt: new Date().toISOString() });
+    await idbPut({ key: KEY, rows: res.merged, fileName: res.lastFileName || (res.existing && res.existing.fileName) || '', batches: res.batches, updatedAt: new Date().toISOString() });
 
-    showToast('"' + def.title + '" sincronizado desde Drive: ' + fmtInt(rows.length) + ' filas (tabla reemplazada).');
+    showToast(mensajeAcumulado(def, res), res.omitidos.length > 0);
+    if (res.omitidos.length) showDriveError('facturas', 'Archivos omitidos: ' + res.omitidos.join('; '));
 
     await refreshStatusFromDB();
   } catch (err) {
@@ -2229,8 +2280,30 @@ function reporteRowDedupKey(r){
 // de orden (#1, #2, #3...). Así se conservan todas, y si se vuelve a cargar el mismo
 // archivo se siguen reconociendo como las mismas y no se duplican.
 function nuevoContadorRepeticiones(){ return new Map(); }
+
+// Clave de deduplicación de "Traslados": identifica una línea de traslado (documento,
+// fecha, bodegas, código y cantidad). Sirve para que al volver a sincronizar la carpeta
+// de Drive los traslados que ya estaban cargados no se dupliquen.
+function trasladoRowDedupKey(r){
+  const f = dateToISO(toDateSafe(r.fecha));
+  return ['T', r.traslado, f, r.bodegaOrigen, r.bodegaDestino, r.codigo, toNumber(r.cantidad), r.usuario]
+    .map(v => String(v===undefined||v===null?'':v).trim().toUpperCase())
+    .join('|');
+}
+
+// Clave de deduplicación de "Facturas": identifica una línea de factura (número de
+// factura, fecha, código, cantidad y punto de venta).
+function facturaRowDedupKey(r){
+  const f = dateToISO(toDateSafe(r.fechaFactura));
+  return ['F', r.factura, f, r.codigo, toNumber(r.cantidad), r.puntoVenta]
+    .map(v => String(v===undefined||v===null?'':v).trim().toUpperCase())
+    .join('|');
+}
+
 function dedupKeyFor(key, r, contador){
-  const base = reporteRowDedupKey(r);
+  const base = key === 'traslados' ? trasladoRowDedupKey(r)
+             : key === 'facturas'  ? facturaRowDedupKey(r)
+             : reporteRowDedupKey(r);
   if (!contador) return base;
   const n = (contador.get(base) || 0) + 1;
   contador.set(base, n);
