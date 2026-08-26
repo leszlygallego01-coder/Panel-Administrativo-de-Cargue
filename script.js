@@ -668,6 +668,76 @@ function findHeaderByKeyword(headerIndex, keywords){
   }
   return -1;
 }
+
+/* ---------- Columnas OBLIGATORIAS por tabla ----------
+   Sin estas columnas el archivo no sirve: los cálculos quedarían en cero y, peor aún,
+   todas las filas se verían "iguales" y el control de duplicados las descartaría
+   (era el caso del CSV separado por comas que no se reconocía y dejaba todo vacío).
+   La clave es el nombre interno del campo; el texto es el nombre que ve el usuario. */
+const COLUMNAS_OBLIGATORIAS = {
+  reporte:    { documento:'Documento', fechaDispensacion:'Fecha de Dispensación', codigoArticulo:'Código de Articulo', unidades:'Unidades' },
+  homologo:   { codigo:'Codigo', homologo:'Homologo' },
+  bodegas:    { bodega:'Bodega', zona:'Zona' },
+  agotados:   { codigoArticulo:'Molecula', estado:'Estado' },
+  inventario: { codigoArticulo:'Codigo', bodegaDetalle:'Bodega Detalle', unidades:'Unidades' },
+  sigla:      { sigla:'Sigla Comercial del Cliente' },
+  traslados:  { fecha:'Fecha', codigo:'Codigo', cantidad:'Cantidad' },
+  facturas:   { fechaFactura:'Fecha Factura', factura:'Factura', codigo:'Codigo', cantidad:'Cantidad' },
+  invfisico:  { codigoArticulo:'Codigo', bodegaDetalle:'Bodega Detalle', unidades:'Unidades en fisico' }
+};
+
+/* ¿En qué columna del archivo está este campo? Usa la misma lógica que la lectura de
+   datos: primero los nombres exactos (alias) y luego el respaldo por palabra clave. */
+function columnaDeCampo(fieldName, aliases, headerIndex){
+  for (const alias of (aliases || [])){
+    const key = normHeader(alias);
+    if (headerIndex.has(key)) return headerIndex.get(key);
+  }
+  if (FIELD_FALLBACK_KEYWORDS[fieldName]){
+    const col = findHeaderByKeyword(headerIndex, FIELD_FALLBACK_KEYWORDS[fieldName]);
+    if (col >= 0) return col;
+  }
+  return -1;
+}
+
+/* Devuelve los nombres (los que ve el usuario) de las columnas obligatorias ausentes.
+   Además detecta el caso en que dos columnas obligatorias apuntan a la MISMA columna del
+   archivo: eso pasa cuando el separador no se reconoce y toda la fila de encabezados
+   quedó dentro de una sola celda, así que en la práctica esas columnas no existen. */
+function columnasObligatoriasFaltantes(datasetDef, headerIndex){
+  const requeridas = COLUMNAS_OBLIGATORIAS[datasetDef && datasetDef.key] || null;
+  if (!requeridas) return [];
+  const faltan = [];
+  const usadas = new Map();
+  for (const fieldName in requeridas){
+    const aliases = (datasetDef.fields && datasetDef.fields[fieldName]) || [];
+    const col = columnaDeCampo(fieldName, aliases, headerIndex);
+    if (col < 0 || usadas.has(col)) faltan.push(requeridas[fieldName]);
+    else usadas.set(col, fieldName);
+  }
+  return faltan;
+}
+
+/* Arma el aviso en español: qué falta, qué encabezados sí se leyeron y qué revisar. */
+function errorColumnasFaltantes(datasetDef, headerIndex, faltan, fileName){
+  const detectados = Array.from(headerIndex.keys());
+  const muestra = detectados.slice(0, 12).join(' | ') + (detectados.length > 12 ? ' | …' : '');
+  let msg = 'El archivo' + (fileName ? ' "' + fileName + '"' : '')
+    + ' no sirve para "' + (datasetDef && datasetDef.title ? datasetDef.title : 'esta tabla') + '": '
+    + 'faltan las columnas obligatorias ' + faltan.join(', ') + '.';
+  msg += detectados.length
+    ? ' Encabezados que se leyeron: ' + muestra + '.'
+    : ' No se pudo leer ningún encabezado.';
+  if (detectados.length <= 1){
+    msg += ' Todo el contenido quedó en una sola columna: si es un CSV, revisa que las columnas estén separadas por coma, punto y coma o tabulación, y vuelve a exportarlo.';
+  } else {
+    msg += ' Revisa que la fila de encabezados esté entre las primeras filas y que los nombres de las columnas no se hayan cambiado.';
+  }
+  const err = new Error(msg);
+  err.code = 'COLUMNAS_FALTANTES';
+  err.columnasFaltantes = faltan;
+  return err;
+}
 function mapRowToFields(rawRow, headerIndex, fieldsDef){
   const out={};
   for (const fieldName in fieldsDef){
@@ -787,7 +857,7 @@ async function parseFile(file, datasetDef){
   const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
   if(!aoa.length) throw new Error('El archivo está vacío.');
 
-  return parseRowsFromAOA(aoa, datasetDef);
+  return parseRowsFromAOA(aoa, datasetDef, file && file.name);
 }
 
 /* =========================================================================
@@ -1417,7 +1487,7 @@ async function syncInventarioFromDrive() {
 
     // Step 5: Map to fields using DATASETS definition
     const def = DATASETS.find(d => d.key === 'inventario');
-    const rows = parseRowsFromAOA(aoa, def);
+    const rows = parseRowsFromAOA(aoa, def, excelFile.name);
 
     if (!rows.length) {
       showToast('No se encontraron filas de datos en el archivo de Drive.', true);
@@ -1484,6 +1554,8 @@ async function syncReporteFromDrive() {
     const batches = prevBatches.slice();
 
     let totalAdded = 0, totalSkipped = 0, totalReparadas = 0, totalSoportesNuevos = 0, lastFileName = '';
+    // Archivos que se dejaron por fuera porque les faltaban columnas obligatorias.
+    const omitidos = [];
 
     for (let i = 0; i < ordered.length; i++) {
       const f = ordered[i];
@@ -1495,9 +1567,14 @@ async function syncReporteFromDrive() {
         const ws = wb.Sheets[wb.SheetNames[0]];
         const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
         if (!aoa.length) continue;
-        rows = parseRowsFromAOA(aoa, def);
+        rows = parseRowsFromAOA(aoa, def, f.name);
       } catch (fileErr) {
         console.warn('No se pudo leer ' + f.name + ':', fileErr);
+        if (fileErr && fileErr.code === 'COLUMNAS_FALTANTES') {
+          omitidos.push(f.name + ' (faltan: ' + (fileErr.columnasFaltantes || []).join(', ') + ')');
+        } else {
+          omitidos.push(f.name + ' (no se pudo leer)');
+        }
         continue;
       }
       if (!rows || !rows.length) continue;
@@ -1534,8 +1611,13 @@ async function syncReporteFromDrive() {
       }
     }
 
+    // Aviso claro de lo que quedó por fuera, con el nombre del archivo.
+    const avisoOmitidos = omitidos.length
+      ? ' Se omitieron ' + omitidos.length + ' archivo(s): ' + omitidos.join('; ') + '.'
+      : '';
+
     if (!merged.length) {
-      showToast('No se encontraron filas de datos en los archivos de Drive.', true);
+      showToast('No se encontraron filas de datos en los archivos de Drive.' + avisoOmitidos, true);
       return;
     }
 
@@ -1545,7 +1627,9 @@ async function syncReporteFromDrive() {
       + (totalSkipped ? (' (' + fmtInt(totalSkipped) + ' ya existían, se omitieron)') : '')
       + (totalReparadas ? (' · ' + fmtInt(totalReparadas) + ' filas actualizadas con Estado/Usuario') : '')
       + (totalSoportesNuevos ? (' · ' + fmtInt(totalSoportesNuevos) + ' líneas que ahora SÍ traen soporte') : '')
-      + '. Total acumulado: ' + fmtInt(merged.length) + ' filas.');
+      + '. Total acumulado: ' + fmtInt(merged.length) + ' filas.' + avisoOmitidos, omitidos.length > 0);
+
+    if (omitidos.length) showDriveError('reporte', 'Archivos omitidos por columnas faltantes: ' + omitidos.join('; '));
 
     await refreshStatusFromDB();
   } catch (err) {
@@ -1587,7 +1671,7 @@ async function syncHomologoFromDrive() {
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
 
-    const rows = parseRowsFromAOA(aoa, def);
+    const rows = parseRowsFromAOA(aoa, def, newest.name);
     if (!rows.length) {
       showToast('No se encontraron filas de datos en el archivo de Drive.', true);
       return;
@@ -1636,7 +1720,7 @@ async function syncTrasladosFromDrive() {
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
 
-    const rows = parseRowsFromAOA(aoa, def);
+    const rows = parseRowsFromAOA(aoa, def, newest.name);
     if (!rows.length) {
       showToast('No se encontraron filas de datos en el archivo de Drive.', true);
       return;
@@ -1685,7 +1769,7 @@ async function syncFacturasFromDrive() {
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
 
-    const rows = parseRowsFromAOA(aoa, def);
+    const rows = parseRowsFromAOA(aoa, def, newest.name);
     if (!rows.length) {
       showToast('No se encontraron filas de datos en el archivo de Drive.', true);
       return;
@@ -1734,7 +1818,7 @@ async function syncInvFisicoFromDrive() {
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
     if (!aoa.length) throw new Error('El archivo está vacío.');
 
-    const rows = parseRowsFromAOA(aoa, def);
+    const rows = parseRowsFromAOA(aoa, def, newest.name);
     if (!rows.length) {
       showToast('No se encontraron filas de datos en el archivo de Drive.', true);
       return;
@@ -1844,6 +1928,10 @@ function driveErrorMessage(err) {
   const msg = (err && err.message) || '';
   const detail = (err && err.driveDetail) || '';
 
+  // El archivo se descargó bien, pero le faltan columnas obligatorias: el aviso ya
+  // viene redactado en español con el nombre del archivo y qué columnas faltan.
+  if (code === 'COLUMNAS_FALTANTES') return msg;
+
   // --- Errores de autorizacion de Google (OAuth / Google Identity Services) ---
   if (msg === 'GIS_NOT_LOADED')
     return 'No se pudo cargar el servicio de acceso de Google. Revisa la conexion o el bloqueador de anuncios y recarga la pagina.';
@@ -1937,17 +2025,22 @@ function clearDriveError(which) {
   else _driveErrorInventario = '';
 }
 
-function parseRowsFromAOA(aoa, datasetDef) {
+function parseRowsFromAOA(aoa, datasetDef, fileName) {
   let headerRowIdx = 0, bestScore = -1;
   const allAliases = new Set();
   Object.values(datasetDef.fields).forEach(arr => arr.forEach(a => allAliases.add(normHeader(a))));
   for (let i = 0; i < Math.min(aoa.length, 10); i++) {
     let score = 0;
-    aoa[i].forEach(c => { if (allAliases.has(normHeader(c))) score++; });
+    (aoa[i] || []).forEach(c => { if (allAliases.has(normHeader(c))) score++; });
     if (score > bestScore) { bestScore = score; headerRowIdx = i; }
   }
   const headerIndex = new Map();
-  aoa[headerRowIdx].forEach((h, idx) => { const nh = normHeader(h); if (nh && !headerIndex.has(nh)) headerIndex.set(nh, idx); });
+  (aoa[headerRowIdx] || []).forEach((h, idx) => { const nh = normHeader(h); if (nh && !headerIndex.has(nh)) headerIndex.set(nh, idx); });
+  // Antes de leer una sola fila comprobamos que el archivo traiga las columnas
+  // obligatorias. Si no, se avisa con nombre y no se importa nada: así no entran
+  // filas vacías al acumulado ni aparecen totales que no cuadran.
+  const faltan = columnasObligatoriasFaltantes(datasetDef, headerIndex);
+  if (faltan.length) throw errorColumnasFaltantes(datasetDef, headerIndex, faltan, fileName);
   const rows = [];
   for (let r = headerRowIdx + 1; r < aoa.length; r++) {
     const raw = aoa[r];
@@ -2120,7 +2213,13 @@ async function handleFileSelected(key,file){
       await idbPut({key, rows, fileName:file.name, updatedAt:new Date().toISOString()});
       showToast('"'+def.title+'" cargado: '+fmtInt(rows.length)+' filas.');
     }await refreshStatusFromDB();
-}catch(err){ console.error(err); showToast('Error leyendo '+file.name+': '+err.message,true); }
+}catch(err){
+  console.error(err);
+  // Si faltan columnas obligatorias el mensaje ya explica en español cuáles son y
+  // menciona el archivo: se muestra tal cual, sin prefijos técnicos.
+  if(err && err.code==='COLUMNAS_FALTANTES') showToast(err.message, true);
+  else showToast('Error leyendo '+file.name+': '+err.message,true);
+}
 }
 /* =========================================================================
    Copia de seguridad (respaldo) y restauracion de TODOS los datos cargados
