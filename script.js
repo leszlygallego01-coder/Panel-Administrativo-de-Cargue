@@ -815,15 +815,29 @@ function mapRowToFields(rawRow, headerIndex, fieldsDef){
 // Cuando una MISMA línea se vuelve a cargar y ahora sí trae soporte (antes 0 / "NO TIENE"),
 // guardamos el soporte nuevo y la fecha del cargue en el que apareció. Eso permite el
 // Reporte Comparativo Periódico de "soportes recuperados" entre cargues.
-function registrarSoporteRecuperado(destino, origen, fechaISO){
+function registrarSoporteRecuperado(destino, origen, fechaISO, secCargue){
   const nuevo = toNumber(origen.soportes);
   const actual = toNumber(destino.soportes);
   if(nuevo>0 && actual===0){
     destino.soportes = origen.soportes;
     destino._fechaSoporte = fechaISO;
+    // Número del cargue en el que llegó el soporte. El visor lo compara con el número
+    // del cargue en el que la línea venía sin soporte: si es posterior, la línea pasa a
+    // contar CON SOPORTE (soporte recuperado).
+    if(secCargue) destino._secSoporte = secCargue;
     return true;
   }
   return false;
+}
+// Número consecutivo del CARGUE. Cada archivo cargado recibe un número mayor que todos
+// los anteriores, sin importar la fecha del archivo: así el orden real de los cargues
+// nunca se pierde y un cumplimiento que llega después (línea entregada o soporte) se
+// reconoce siempre como posterior, aunque las fechas de los archivos vengan repetidas
+// o desordenadas.
+function siguienteSecCargue(rows){
+  let max = 0;
+  (rows||[]).forEach(r => { const n = Number(r && r._secCargue); if(n>max) max = n; });
+  return max + 1;
 }
 function completarCamposFaltantes(destino, origen){
   let cambios=0;
@@ -1579,6 +1593,10 @@ async function syncReporteFromDrive() {
     prevRows.forEach(r => { const k = dedupKeyFor(KEY, r, contadorPrevio); if(!seen.has(k)) seen.set(k, r); });
     const merged = prevRows.slice();
     const batches = prevBatches.slice();
+    // Número de cargue: cada archivo que se lee recibe un consecutivo mayor que todos
+    // los anteriores. Así el visor sabe cuál cargue llegó antes y cuál después aunque
+    // dos archivos tengan la misma fecha o vengan desordenados.
+    let secCargue = siguienteSecCargue(prevRows);
 
     let totalAdded = 0, totalSkipped = 0, totalReparadas = 0, totalSoportesNuevos = 0, lastFileName = '';
     // Archivos que se dejaron por fuera porque les faltaban columnas obligatorias.
@@ -1614,22 +1632,28 @@ async function syncReporteFromDrive() {
       // NO el momento de sincronizar: así cada archivo cae en el corte que le corresponde
       // (1-10 / 11-20 / 21-31) y los cambios entre cargues se ven de un corte a otro.
       const nowISO = f.modifiedTime ? new Date(f.modifiedTime).toISOString() : new Date().toISOString();
+      // Consecutivo propio de ESTE archivo dentro de la lectura (los archivos vienen
+      // ordenados del más antiguo al más reciente).
+      const secArchivo = secCargue++;
       for (let j = 0; j < rows.length; j++) {
         const k = dedupKeyFor(KEY, rows[j], contador);
         if (seen.has(k)) {
           skipped++;
           const prevRow = seen.get(k);
-          // Corrige históricos guardados con la fecha de sincronización: se queda con la
-          // fecha del archivo MÁS ANTIGUO en que apareció esta versión de la línea.
-          if (!prevRow._fechaCargue || String(prevRow._fechaCargue) > nowISO) prevRow._fechaCargue = nowISO;
+          // La línea ya estaba: se CONSERVA la fecha y el número del cargue en que
+          // apareció por primera vez. Nunca se mueve hacia atrás, porque esa marca es la
+          // que permite reconocer después un cumplimiento llegado en un cargue posterior.
+          if (!prevRow._fechaCargue) prevRow._fechaCargue = nowISO;
+          if (!prevRow._secCargue) prevRow._secCargue = secArchivo;
           // La fila ya estaba guardada: completamos los campos que estén vacíos
           // (Estado, Usuario Creación, etc.) para no perder datos del acumulado antiguo.
           if (completarCamposFaltantes(prevRow, rows[j])) reparadas++;
           // Si la línea ahora llega CON soporte y antes estaba en 0, lo registramos.
-          if (registrarSoporteRecuperado(prevRow, rows[j], nowISO)) soportesNuevos++;
+          if (registrarSoporteRecuperado(prevRow, rows[j], nowISO, secArchivo)) soportesNuevos++;
           continue;
         }
         rows[j]._fechaCargue = nowISO;
+        rows[j]._secCargue = secArchivo;
         seen.set(k, rows[j]); merged.push(rows[j]); added++;
       }
       totalAdded += added; totalSkipped += skipped; totalReparadas += reparadas; totalSoportesNuevos += soportesNuevos;
@@ -1748,6 +1772,8 @@ async function acumularCarpetaDrive(accessToken, files, KEY, def) {
 
   const merged = prevRows.slice();
   const batches = prevBatches.slice();
+  // Consecutivo de cargue: cada archivo leído recibe un número mayor que los anteriores.
+  let secCargue = siguienteSecCargue(prevRows);
 
   let totalAdded = 0, totalSkipped = 0, lastFileName = '';
   const omitidos = []; // archivos dejados por fuera (columnas faltantes o ilegibles)
@@ -1777,6 +1803,7 @@ async function acumularCarpetaDrive(accessToken, files, KEY, def) {
     // La fecha de cargue es la fecha REAL del archivo en Drive, no el momento de
     // sincronizar: así cada archivo queda ubicado en el periodo que le corresponde.
     const nowISO = f.modifiedTime ? new Date(f.modifiedTime).toISOString() : new Date().toISOString();
+    const secArchivo = secCargue++;
     const contador = nuevoContadorRepeticiones();
     let added = 0, skipped = 0;
     for (let j = 0; j < rows.length; j++) {
@@ -1784,13 +1811,16 @@ async function acumularCarpetaDrive(accessToken, files, KEY, def) {
       if (seen.has(k)) {
         skipped++;
         const prevRow = seen.get(k);
-        // Se conserva la fecha del archivo más antiguo en que apareció la línea
-        if (!prevRow._fechaCargue || String(prevRow._fechaCargue) > nowISO) prevRow._fechaCargue = nowISO;
+        // Se conserva la fecha y el número del cargue en que la línea apareció por
+        // primera vez; no se mueve hacia atrás.
+        if (!prevRow._fechaCargue) prevRow._fechaCargue = nowISO;
+        if (!prevRow._secCargue) prevRow._secCargue = secArchivo;
         // La línea ya estaba: completamos los campos que estuvieran vacíos
         completarCamposFaltantes(prevRow, rows[j]);
         continue;
       }
       rows[j]._fechaCargue = nowISO;
+      rows[j]._secCargue = secArchivo;
       seen.set(k, rows[j]); merged.push(rows[j]); added++;
     }
     totalAdded += added; totalSkipped += skipped; lastFileName = f.name;
@@ -2335,6 +2365,8 @@ async function handleFileSelected(key,file){
       // momento de subirlo: así cada archivo cae en el corte que le corresponde y un
       // recargue posterior sí se ve como cambio de un corte a otro.
       const nowISO = (file && file.lastModified ? new Date(file.lastModified) : new Date()).toISOString();
+      // Número de este cargue: siempre mayor que el de todos los cargues anteriores.
+      const secArchivo = siguienteSecCargue(prevRows);
       let added=0, skipped=0, reparadas=0, soportesNuevos=0;
       const contador = nuevoContadorRepeticiones();
       rows.forEach(r=>{
@@ -2342,17 +2374,20 @@ async function handleFileSelected(key,file){
         if(seen.has(k)){
           skipped++;
           const prevRow=seen.get(k);
-          // Ajusta históricos: se conserva la fecha del archivo más antiguo donde apareció.
-          if(!prevRow._fechaCargue || String(prevRow._fechaCargue) > nowISO) prevRow._fechaCargue = nowISO;
+          // Se conserva la fecha y el número del cargue en que la línea apareció por
+          // primera vez: es la referencia para reconocer cumplimientos posteriores.
+          if(!prevRow._fechaCargue) prevRow._fechaCargue = nowISO;
+          if(!prevRow._secCargue) prevRow._secCargue = secArchivo;
           // Fila ya guardada: rellenamos los campos vacíos (Estado, Usuario Creación...)
           if(completarCamposFaltantes(prevRow, r)) reparadas++;
           // ¿La línea llegó ahora CON soporte cuando antes estaba en 0 / NO TIENE?
-          if(key==='reporte' && registrarSoporteRecuperado(prevRow, r, nowISO)) soportesNuevos++;
+          if(key==='reporte' && registrarSoporteRecuperado(prevRow, r, nowISO, secArchivo)) soportesNuevos++;
           return;
         }
         // Guardamos la fecha de cargue en cada fila: sirve para el Reporte Comparativo
         // Periódico (cortes de 1-10 / 11-20 / 21-31), comparando cargue contra cargue.
         r._fechaCargue = nowISO;
+        r._secCargue = secArchivo;
         seen.set(k, r); merged.push(r); added++;
       });
       const batches = prevBatches.concat([{fileName:file.name, rowCount:rows.length, addedCount:added, skippedCount:skipped, uploadedAt:new Date().toISOString()}]);
