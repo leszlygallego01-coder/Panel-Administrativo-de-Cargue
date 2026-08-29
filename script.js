@@ -2604,6 +2604,49 @@ async function publicarPaqueteVisor(){
    uno solo (el mas reciente).
    ========================================================================= */
 const PAQUETE_DRIVE_MIME = 'application/octet-stream';
+const PAQUETE_TIMEOUT_OAUTH = 120000;  // 2 min esperando la ventana de Google
+const PAQUETE_TIMEOUT_LISTA  = 45000;   // 45 s consultando la carpeta
+const PAQUETE_TIMEOUT_SUBIDA = 900000;  // 15 min de subida (paquetes grandes)
+
+/* Evita que un paso se quede esperando para siempre: si tarda mas de lo
+   permitido, se corta y se avisa al usuario con un mensaje claro. */
+function conTiempoLimite(promesa, ms, codigo){
+  return new Promise((resolve, reject)=>{
+    let listo=false;
+    const t=setTimeout(()=>{ if(!listo){ listo=true; reject(new Error(codigo)); } }, ms);
+    Promise.resolve(promesa).then(
+      v=>{ if(!listo){ listo=true; clearTimeout(t); resolve(v); } },
+      e=>{ if(!listo){ listo=true; clearTimeout(t); reject(e); } }
+    );
+  });
+}
+
+/* Sube el paquete mostrando el porcentaje de avance. Se usa XMLHttpRequest
+   porque es el unico que informa del progreso de subida. */
+function driveSubirConProgreso(url, accessToken, cuerpo, contentType, alAvanzar){
+  return new Promise((resolve, reject)=>{
+    const xhr=new XMLHttpRequest();
+    xhr.open('POST', url, true);
+    xhr.setRequestHeader('Authorization', 'Bearer '+accessToken);
+    xhr.setRequestHeader('Content-Type', contentType);
+    xhr.timeout=PAQUETE_TIMEOUT_SUBIDA;
+    if(xhr.upload && typeof alAvanzar==='function'){
+      xhr.upload.onprogress=(ev)=>{
+        if(ev.lengthComputable && ev.total>0) alAvanzar(Math.round(ev.loaded*100/ev.total));
+      };
+    }
+    xhr.onload=()=>{
+      if(xhr.status>=200 && xhr.status<300){ resolve(xhr.responseText); return; }
+      let detail='';
+      try{ const j=JSON.parse(xhr.responseText); if(j && j.error) detail=j.error.message||j.error.status||''; }catch(e){}
+      const e=new Error('DRIVE_HTTP_'+xhr.status); e.httpStatus=xhr.status; e.driveDetail=detail; reject(e);
+    };
+    xhr.onerror=()=>{ const e=new Error('DRIVE_NETWORK'); e.driveDetail='fallo de red al subir'; reject(e); };
+    xhr.ontimeout=()=>{ reject(new Error('SUBIDA_TIMEOUT')); };
+    xhr.onabort=()=>{ reject(new Error('SUBIDA_CANCELADA')); };
+    xhr.send(cuerpo);
+  });
+}
 
 // Llamada a Drive con metodo y cuerpo (subir / borrar). driveApiFetch solo
 // sirve para lecturas simples, asi que aqui se maneja el resto de verbos.
@@ -2653,32 +2696,53 @@ async function driveTokenPuedeEscribir(accessToken){
 
 async function enviarPaqueteACarpetaDrive(){
   const btn=document.getElementById('btnEnviarDrive');
+  const etiqueta='Enviar los resultados de los indicadores a la carpeta';
+  const paso=(txt)=>{ if(btn) btn.textContent=txt; };
   try{
-    const armado=await paqueteConstruirSobre();
-    if(!armado) return;
-    if(btn){ btn.disabled=true; btn.textContent='Enviando a la carpeta…'; }
+    /* IMPORTANTE: primero se abre la ventana de Google, ANTES de pedir la
+       contrasena y cifrar. Si se hace al final, el navegador ya no ve un clic
+       reciente y bloquea la ventana emergente sin avisar: el boton se queda
+       "Enviando a la carpeta..." para siempre. */
+    if(btn){ btn.disabled=true; }
+    paso('Conectando con Google…');
     showToast('Conectando con Google Drive…');
-    let token=await authenticateDrive();
+    let token=await conTiempoLimite(authenticateDrive(), PAQUETE_TIMEOUT_OAUTH, 'OAUTH_TIMEOUT');
+
     // Si el permiso guardado era solo de lectura, se pide de nuevo con consentimiento.
-    if(await driveTokenPuedeEscribir(token)===false){
+    let puedeEscribir=null;
+    try{ puedeEscribir=await conTiempoLimite(driveTokenPuedeEscribir(token), 20000, 'TOKENINFO_TIMEOUT'); }
+    catch(e){ puedeEscribir=null; } // si no se pudo verificar, se sigue e intenta subir
+    if(puedeEscribir===false){
       showToast('Falta el permiso para guardar en Drive: acepta la casilla en la ventana de Google.');
-      token=await authenticateDrive(true);
-      if(await driveTokenPuedeEscribir(token)===false) throw new Error('NO_SCOPE_ESCRITURA');
+      token=await conTiempoLimite(authenticateDrive(true), PAQUETE_TIMEOUT_OAUTH, 'OAUTH_TIMEOUT');
+      let reintento=null;
+      try{ reintento=await conTiempoLimite(driveTokenPuedeEscribir(token), 20000, 'TOKENINFO_TIMEOUT'); }catch(e){ reintento=null; }
+      if(reintento===false) throw new Error('NO_SCOPE_ESCRITURA');
     }
 
-    // 1) Borrar lo que ya hubiera en la carpeta (no acumulativo)
-    let borrados=0;
-    try{
-      const previos=await listarArchivosCarpetaPaquete(token);
-      for(let i=0;i<previos.length;i++){
-        try{
-          await driveApiSend('https://www.googleapis.com/drive/v3/files/'+previos[i].id+'?supportsAllDrives=true', token, 'DELETE');
-          borrados++;
-        }catch(e){ console.warn('No se pudo borrar '+previos[i].name, e); }
-      }
-    }catch(e){ console.warn('No se pudo revisar la carpeta antes de subir', e); }
+    // 1) Revisar la carpeta (si no existe o no hay acceso, se falla ya, antes de cifrar)
+    paso('Revisando la carpeta…');
+    let previos=[];
+    previos=await conTiempoLimite(listarArchivosCarpetaPaquete(token), PAQUETE_TIMEOUT_LISTA, 'LISTA_TIMEOUT');
 
-    // 2) Subir el paquete nuevo (multipart: metadatos + contenido en un solo envio)
+    // 2) Ahora si: contrasena, compresion y cifrado
+    paso('Preparando el paquete…');
+    const armado=await paqueteConstruirSobre();
+    if(!armado) return;
+
+    // 3) Borrar lo que ya hubiera en la carpeta (no acumulativo)
+    paso('Reemplazando el anterior…');
+    let borrados=0;
+    for(let i=0;i<previos.length;i++){
+      try{
+        await conTiempoLimite(
+          driveApiSend('https://www.googleapis.com/drive/v3/files/'+previos[i].id+'?supportsAllDrives=true', token, 'DELETE'),
+          PAQUETE_TIMEOUT_LISTA, 'BORRADO_TIMEOUT');
+        borrados++;
+      }catch(e){ console.warn('No se pudo borrar '+previos[i].name, e); }
+    }
+
+    // 4) Subir el paquete nuevo (multipart: metadatos + contenido en un solo envio)
     const nombre='Paquete_Visor_Medisfarma_'+backupStamp()+'.medisfarma';
     const metadatos={ name: nombre, parents: [DRIVE_FOLDER_PAQUETE], mimeType: PAQUETE_DRIVE_MIME };
     const limite='medisfarma'+Date.now();
@@ -2689,12 +2753,14 @@ async function enviarPaqueteACarpetaDrive(){
       JSON.stringify(armado.sobre),
       '\r\n--'+limite+'--\r\n'
     ], { type: 'multipart/related; boundary='+limite });
-    showToast('Subiendo el paquete a la carpeta de Drive…');
-    const resp=await driveApiSend(
+    const mb=(cuerpo.size/1048576);
+    paso('Subiendo 0%…');
+    showToast('Subiendo el paquete a la carpeta de Drive ('+(mb<1?'<1':mb.toFixed(1))+' MB)…');
+    await driveSubirConProgreso(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name&supportsAllDrives=true',
-      token, 'POST', cuerpo, { 'Content-Type': 'multipart/related; boundary='+limite }
+      token, cuerpo, 'multipart/related; boundary='+limite,
+      (pct)=>{ paso('Subiendo '+pct+'%…'); }
     );
-    await resp.json();
 
     showToast('Resultados enviados a la carpeta de Drive: '+armado.backup.datasets.length+' fuente(s) · '
       + fmtInt(armado.backup.totalFilas) + ' filas'
@@ -2702,12 +2768,21 @@ async function enviarPaqueteACarpetaDrive(){
       + '. Entrega la contrasena a quienes consultan el visor.');
   }catch(err){
     console.error(err);
-    if(err && err.message==='NO_SCOPE_ESCRITURA'){
+    const cod=(err&&err.message)||'';
+    if(cod==='NO_SCOPE_ESCRITURA'){
       showToast('Google no concedio el permiso para guardar archivos en Drive. Vuelve a intentarlo y acepta esa casilla.',true);
+    }else if(cod==='OAUTH_TIMEOUT'){
+      showToast('El navegador no mostro la ventana de Google. Permite las ventanas emergentes de este sitio (icono a la derecha de la barra de direcciones), recarga con Ctrl+F5 y vuelve a pulsar el boton.',true);
+    }else if(cod==='LISTA_TIMEOUT'||cod==='BORRADO_TIMEOUT'){
+      showToast('Google Drive no respondio al revisar la carpeta de resultados. Revisa la conexion e intenta de nuevo.',true);
+    }else if(cod==='SUBIDA_TIMEOUT'){
+      showToast('La subida tardo demasiado y se detuvo. Usa una conexion mas estable y vuelve a intentarlo; el paquete es grande.',true);
+    }else if(cod==='SUBIDA_CANCELADA'){
+      showToast('Se interrumpio la subida del paquete. Vuelve a intentarlo.',true);
     }else{
       showToast('No se pudo enviar el paquete a la carpeta: '+driveErrorMessage(err),true);
     }
-  }finally{ if(btn){ btn.disabled=false; btn.textContent='Enviar los resultados de los indicadores a la carpeta'; } }
+  }finally{ if(btn){ btn.disabled=false; btn.textContent=etiqueta; } }
 }
 
 function backupSheetName(key, usados){
