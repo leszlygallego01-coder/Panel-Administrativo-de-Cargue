@@ -1004,7 +1004,10 @@ const DRIVE_FOLDER_HOMOLOGO = '11UzrdMdVlcwZFWusXg5fUastekt0eRPb';      // Tabla
 const DRIVE_FOLDER_TRASLADOS = '1DJrU4m0vzZY2AHaXPBdIu80gDEgZtJzK';     // Traslados entre bodegas
 const DRIVE_FOLDER_FACTURAS = '1MOFehAcE_nKHGLc4QV4cAUUDGZIi99Ac';      // Facturas por punto de venta
 const DRIVE_FOLDER_INVFISICO = '1zhP9VeJPGbUaoV99XuHYSPExheIQj5y0';     // Inventario Físico (conteo)
-const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive.readonly';
+const DRIVE_FOLDER_PAQUETE = '1RbpCEBkBSTXuschQBnG2olZ4SSoqP90Y';        // Resultados de indicadores (paquete cifrado del visor)
+// El panel necesita ESCRIBIR en Drive (subir el paquete y borrar el anterior),
+// por eso el permiso no puede ser solo de lectura.
+const DRIVE_SCOPES = 'https://www.googleapis.com/auth/drive';
 let _driveSyncing = false;
 let _driveSyncingReporte = false;
 let _driveSyncingHomologo = false;
@@ -2495,6 +2498,218 @@ async function descargarRespaldoJSON(){
   }finally{ if(btn){ btn.disabled=false; } }
 }
 
+/* =========================================================================
+   Paquete cifrado para el VISOR (solo lectura)
+   El administrador publica aqui un archivo .medisfarma protegido con
+   contrasena; quien consulta lo abre en la app de resultados y unicamente
+   puede ver los indicadores (no puede cargar fuentes).
+   ========================================================================= */
+const PAQUETE_APP_ID = 'medisfarma-paquete';
+const PAQUETE_VERSION = 1;
+const PAQUETE_ITERACIONES = 150000; // PBKDF2: coste de derivacion de la clave
+
+// Convierte datos binarios a texto base64 por bloques (evita desbordar la pila
+// con archivos grandes).
+function bytesABase64(bytes){
+  const chunk=0x8000; let s='';
+  for(let i=0;i<bytes.length;i+=chunk){
+    s+=String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(s);
+}
+function base64ABytes(b64){
+  const bin=atob(String(b64||''));
+  const out=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i]=bin.charCodeAt(i);
+  return out;
+}
+// Deriva la clave AES-256 a partir de la contrasena escrita por el administrador.
+async function paqueteDerivarClave(password, salt, usos){
+  const base=await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name:'PBKDF2', salt, iterations: PAQUETE_ITERACIONES, hash:'SHA-256' },
+    base, { name:'AES-GCM', length:256 }, false, usos
+  );
+}
+// Comprime el texto si el navegador lo permite (el paquete pesa mucho menos).
+async function paqueteComprimir(texto){
+  const bytes=new TextEncoder().encode(texto);
+  if(typeof CompressionStream==='undefined') return { datos: bytes, comprimido:false };
+  try{
+    const cs=new CompressionStream('gzip');
+    const escritor=cs.writable.getWriter();
+    escritor.write(bytes); escritor.close();
+    const buf=await new Response(cs.readable).arrayBuffer();
+    return { datos: new Uint8Array(buf), comprimido:true };
+  }catch(e){ return { datos: bytes, comprimido:false }; }
+}
+
+/* Arma el paquete cifrado: pide la contrasena, comprime y cifra todo lo
+   cargado. Devuelve null si el usuario cancela o si algo no cuadra (el aviso
+   al usuario ya se muestra aqui). Lo usan tanto la descarga como el envio a
+   la carpeta de Drive. */
+async function paqueteConstruirSobre(){
+  if(!(window.crypto && crypto.subtle)){
+    showToast('Este navegador no permite cifrar el paquete. Usa Chrome o Edge actualizado.',true); return null;
+  }
+  const backup=await construirRespaldo();
+  if(!backup.datasets.length){ showToast('No hay datos cargados para publicar.',true); return null; }
+  const pass=prompt('Contrasena para proteger el paquete del visor (minimo 6 caracteres).\n\nLa misma contrasena se le entrega a quienes solo consultan.');
+  if(pass===null) return null;
+  if(String(pass).length<6){ showToast('La contrasena debe tener al menos 6 caracteres.',true); return null; }
+  const pass2=prompt('Escribe otra vez la contrasena para confirmarla.');
+  if(pass2===null) return null;
+  if(pass2!==pass){ showToast('Las contrasenas no coinciden. No se genero el paquete.',true); return null; }
+  showToast('Cifrando el paquete para el visor…');
+  await new Promise(r=>setTimeout(r,30));
+  const { datos, comprimido }=await paqueteComprimir(JSON.stringify(backup));
+  const salt=crypto.getRandomValues(new Uint8Array(16));
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const clave=await paqueteDerivarClave(pass, salt, ['encrypt']);
+  const cifrado=await crypto.subtle.encrypt({name:'AES-GCM', iv}, clave, datos);
+  const sobre={
+    app: PAQUETE_APP_ID,
+    version: PAQUETE_VERSION,
+    generadoEn: new Date().toISOString(),
+    fuentes: backup.datasets.length,
+    totalFilas: backup.totalFilas,
+    comprimido,
+    iteraciones: PAQUETE_ITERACIONES,
+    salt: bytesABase64(salt),
+    iv: bytesABase64(iv),
+    datos: bytesABase64(new Uint8Array(cifrado))
+  };
+  return { sobre, backup };
+}
+
+async function publicarPaqueteVisor(){
+  const btn=document.getElementById('btnPublicar');
+  try{
+    const armado=await paqueteConstruirSobre();
+    if(!armado) return;
+    if(btn){ btn.disabled=true; }
+    const blob=new Blob([JSON.stringify(armado.sobre)],{type:'application/json'});
+    descargarArchivo('Paquete_Visor_Medisfarma_'+backupStamp()+'.medisfarma', blob);
+    showToast('Paquete publicado: '+armado.backup.datasets.length+' fuente(s) · '+fmtInt(armado.backup.totalFilas)+' filas. Envialo junto con la contrasena a quienes solo consultan.');
+  }catch(err){
+    console.error(err);
+    showToast('No se pudo publicar el paquete: '+err.message,true);
+  }finally{ if(btn){ btn.disabled=false; } }
+}
+
+/* =========================================================================
+   Envio del paquete a la carpeta de Drive "Resultados de los indicadores"
+   La carpeta NO es acumulativa: antes de subir el paquete nuevo se borran
+   los archivos que ya estuvieran alli, para que el visor siempre encuentre
+   uno solo (el mas reciente).
+   ========================================================================= */
+const PAQUETE_DRIVE_MIME = 'application/octet-stream';
+
+// Llamada a Drive con metodo y cuerpo (subir / borrar). driveApiFetch solo
+// sirve para lecturas simples, asi que aqui se maneja el resto de verbos.
+async function driveApiSend(url, accessToken, metodo, cuerpo, cabeceras){
+  const headers=Object.assign({ 'Authorization': 'Bearer ' + accessToken }, cabeceras||{});
+  let resp;
+  try{
+    resp=await fetch(url, { method: metodo, headers, body: cuerpo });
+  }catch(netErr){
+    const e=new Error('DRIVE_NETWORK');
+    e.driveDetail=netErr && netErr.message ? netErr.message : 'fallo de red';
+    throw e;
+  }
+  if(!resp.ok){
+    let detail='';
+    try{ const j=await resp.json(); if(j && j.error) detail=j.error.message || j.error.status || ''; }catch(e){}
+    const e=new Error('DRIVE_HTTP_'+resp.status);
+    e.httpStatus=resp.status;
+    e.driveDetail=detail;
+    throw e;
+  }
+  return resp;
+}
+
+// Lista TODO lo que haya en la carpeta del paquete (sin filtrar por tipo).
+async function listarArchivosCarpetaPaquete(accessToken){
+  const q = "'" + DRIVE_FOLDER_PAQUETE + "' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'";
+  const url = 'https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q)
+    + '&fields=files(id,name,mimeType,modifiedTime,size)'
+    + '&orderBy=modifiedTime desc&pageSize=200'
+    + '&supportsAllDrives=true&includeItemsFromAllDrives=true';
+  const resp=await driveApiFetch(url, accessToken);
+  const data=await resp.json();
+  return data.files || [];
+}
+
+// Verifica que el permiso concedido permita escribir (no solo leer).
+async function driveTokenPuedeEscribir(accessToken){
+  try{
+    const r=await fetch('https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=' + encodeURIComponent(accessToken));
+    if(!r.ok) return null; // no se pudo verificar
+    const j=await r.json();
+    const scopes=String(j.scope||'');
+    return /auth\/drive(\s|$)|auth\/drive\.file/.test(scopes);
+  }catch(e){ return null; }
+}
+
+async function enviarPaqueteACarpetaDrive(){
+  const btn=document.getElementById('btnEnviarDrive');
+  try{
+    const armado=await paqueteConstruirSobre();
+    if(!armado) return;
+    if(btn){ btn.disabled=true; btn.textContent='Enviando a la carpeta…'; }
+    showToast('Conectando con Google Drive…');
+    let token=await authenticateDrive();
+    // Si el permiso guardado era solo de lectura, se pide de nuevo con consentimiento.
+    if(await driveTokenPuedeEscribir(token)===false){
+      showToast('Falta el permiso para guardar en Drive: acepta la casilla en la ventana de Google.');
+      token=await authenticateDrive(true);
+      if(await driveTokenPuedeEscribir(token)===false) throw new Error('NO_SCOPE_ESCRITURA');
+    }
+
+    // 1) Borrar lo que ya hubiera en la carpeta (no acumulativo)
+    let borrados=0;
+    try{
+      const previos=await listarArchivosCarpetaPaquete(token);
+      for(let i=0;i<previos.length;i++){
+        try{
+          await driveApiSend('https://www.googleapis.com/drive/v3/files/'+previos[i].id+'?supportsAllDrives=true', token, 'DELETE');
+          borrados++;
+        }catch(e){ console.warn('No se pudo borrar '+previos[i].name, e); }
+      }
+    }catch(e){ console.warn('No se pudo revisar la carpeta antes de subir', e); }
+
+    // 2) Subir el paquete nuevo (multipart: metadatos + contenido en un solo envio)
+    const nombre='Paquete_Visor_Medisfarma_'+backupStamp()+'.medisfarma';
+    const metadatos={ name: nombre, parents: [DRIVE_FOLDER_PAQUETE], mimeType: PAQUETE_DRIVE_MIME };
+    const limite='medisfarma'+Date.now();
+    const cuerpo=new Blob([
+      '--'+limite+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n',
+      JSON.stringify(metadatos),
+      '\r\n--'+limite+'\r\nContent-Type: '+PAQUETE_DRIVE_MIME+'\r\n\r\n',
+      JSON.stringify(armado.sobre),
+      '\r\n--'+limite+'--\r\n'
+    ], { type: 'multipart/related; boundary='+limite });
+    showToast('Subiendo el paquete a la carpeta de Drive…');
+    const resp=await driveApiSend(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name&supportsAllDrives=true',
+      token, 'POST', cuerpo, { 'Content-Type': 'multipart/related; boundary='+limite }
+    );
+    await resp.json();
+
+    showToast('Resultados enviados a la carpeta de Drive: '+armado.backup.datasets.length+' fuente(s) · '
+      + fmtInt(armado.backup.totalFilas) + ' filas'
+      + (borrados ? ' (se reemplazo el paquete anterior)' : '')
+      + '. Entrega la contrasena a quienes consultan el visor.');
+  }catch(err){
+    console.error(err);
+    if(err && err.message==='NO_SCOPE_ESCRITURA'){
+      showToast('Google no concedio el permiso para guardar archivos en Drive. Vuelve a intentarlo y acepta esa casilla.',true);
+    }else{
+      showToast('No se pudo enviar el paquete a la carpeta: '+driveErrorMessage(err),true);
+    }
+  }finally{ if(btn){ btn.disabled=false; btn.textContent='Enviar los resultados de los indicadores a la carpeta'; } }
+}
+
 function backupSheetName(key, usados){
   let base=String(key).slice(0,28).replace(/[\[\]\*\/\\\?:]/g,'_');
   let name=base, i=2;
@@ -2572,6 +2787,11 @@ async function restaurarRespaldo(file){
   }
 }
 
+document.getElementById('btnPublicar').addEventListener('click', publicarPaqueteVisor);
+(function(){
+  const b=document.getElementById('btnEnviarDrive');
+  if(b) b.addEventListener('click', enviarPaqueteACarpetaDrive);
+})();
 document.getElementById('btnBackup').addEventListener('click', descargarRespaldoJSON);
 document.getElementById('btnBackupExcel').addEventListener('click', descargarRespaldoExcel);
 document.getElementById('btnRestaurar').addEventListener('click', ()=>{
