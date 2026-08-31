@@ -130,12 +130,20 @@ const EPS_GRUPO_MAP_RAW = {
   'FIDEICOMISOS PATRIMONIOS AUTONOMOS FIDUCIARIA LA PREVISORA S.A-CAPITA':'FIDEICOMISOS','FIDEICOMISOS PATRIMONIOS AUTONOMOS FIDUCIARIA LA PREVISORA S.A-EVENTO':'FIDEICOMISOS',
   'NUEVA EMPRESA PROMOTORA DE SALUD S.A.-CONTRIBUTIVO':'NUEVA EPS','NUEVA EMPRESA PROMOTORA DE SALUD S.A.-TUTELAS':'NUEVA EPS','NUEVA EMPRESA PROMOTORA DE SALUD S.A.-TUTELAS SUB':'NUEVA EPS','NUEVA EMPRESA PROMOTORA DE SALUD S.A.-SUBSIDIADO':'NUEVA EPS',
   'POSITIVA COMPAÑÍA DE SEGUROS S.A.':'POSITIVA',
-  'UNION TEMPORAL SALUD INTEGRAL MAISFEN':'UNION TEMPORAL SALUD INTEGRAL MAISFEN'
+  'UNION TEMPORAL SALUD INTEGRAL MAISFEN':'MAISFEN',
+  'EMSSANAR SUBSIDIADO':'EMSSANAR','EMSSANAR CONTRIBUTIVO':'EMSSANAR',
+  'CAJA DE COMPENSACION FAMILIAR COMFENALCO VALLE':'COMFENALCO'
 };
 const EPS_GRUPO_MAP = new Map(Object.entries(EPS_GRUPO_MAP_RAW).map(([k,v])=>[normValue(k), v]));
 function epsAGrupo(eps){
-  const g = EPS_GRUPO_MAP.get(normValue(eps));
-  return g || String(eps||'').trim() || 'N/D'; // si no está en la tabla, queda como su propia sigla (no se pierde)
+  const nv = normValue(eps);
+  const g = EPS_GRUPO_MAP.get(nv);
+  if(g) return g;
+  // Nombres muy largos del archivo fuente: se muestran con su sigla corta.
+  if(nv.includes('COMFENAL')) return 'COMFENALCO';
+  if(nv.includes('EMSSANAR')) return 'EMSSANAR';
+  if(nv.includes('MAISFEN')) return 'MAISFEN';
+  return String(eps||'').trim() || 'N/D'; // si no está en la tabla, queda como su propia sigla (no se pierde)
 }
 
 // Correcciones de siglas mal codificadas / duplicadas que llegan del archivo fuente
