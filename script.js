@@ -237,7 +237,7 @@ const DATASETS = [
   {
     key: 'traslados', tabla: 'Tabla_8', title: 'Traslados', required: false, accumulate: true,
     desc: 'Traslados entre bodegas realizados por cada usuario. Los datos provienen exclusivamente de la carpeta de Google Drive y se ACUMULAN: cada sincronización suma los traslados nuevos y no borra lo ya cargado. El Codigo se cruza con la tabla Homólogo para saber si la molécula es Pareto o No Pareto.',
-    cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Usuario'],
+    cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Recibido','Usuario'],
     fields: {
       traslado: ['TRASLADO','NRO TRASLADO','NUMERO TRASLADO','NÚMERO TRASLADO','No TRASLADO','DOCUMENTO TRASLADO','DOCUMENTO','CONSECUTIVO'],
       fecha: ['FECHA','FECHA TRASLADO','FECHA DE TRASLADO','FECHA DEL TRASLADO'],
@@ -246,6 +246,9 @@ const DATASETS = [
       codigo: ['CODIGO','CÓDIGO','CODIGO ARTICULO','CODIGO DE ARTICULO','COD ARTICULO','COD. ARTICULO'],
       descripcion: ['DESCRIPCION','DESCRIPCIÓN','DESCRIPCION ARTICULO','DESCRIPCIÓN ARTICULO','ARTICULO','NOMBRE ARTICULO','PRODUCTO'],
       cantidad: ['CANTIDAD','CANTIDAD TRASLADADA','UNIDADES','CANT','CANT.'],
+      // Estado de recepción del traslado: 'Recibido' o 'No Recibido'. Solo las líneas
+      // NO recibidas se consideran pendientes en la Base Supervisores.
+      recibido: ['RECIBIDO','RECIBIDA','ESTADO RECIBIDO','ESTADO DEL TRASLADO','ESTADO TRASLADO','ESTADO','RECEPCION','RECEPCIÓN'],
       usuario: ['USUARIO','USUARIO CREACION','USUARIO CREACIÓN','USUARIO QUE REALIZA','USUARIO TRASLADO','RESPONSABLE']
     }
   },
@@ -674,7 +677,9 @@ const FIELD_FALLBACK_KEYWORDS = {
   unidades: ['UNIDADES DISPENSADAS','UNIDADES'],
   descripcion: ['DESCRIPCION ARTICULO','NOMBRE ARTICULO'],
   contrato: ['CONTRATO'],
-  diferencia: ['DIFERENCIA']
+  diferencia: ['DIFERENCIA'],
+  // Columna "Recibido" de Traslados (valores tipo Recibido / No Recibido)
+  recibido: ['RECIBIDO','ESTADO RECIB','NO RECIBIDO']
 };
 /* Busca una columna por palabra clave, pero SIEMPRE prefiriendo la coincidencia más
    precisa. En un archivo con ~130 columnas hay muchos encabezados que contienen
@@ -739,7 +744,7 @@ const COLUMNAS_OBLIGATORIAS = {
   agotados:   { codigoArticulo:'Molecula', estado:'Estado' },
   inventario: { codigoArticulo:'Codigo', bodegaDetalle:'Bodega Detalle', unidades:'Unidades' },
   sigla:      { sigla:'Sigla Comercial del Cliente' },
-  traslados:  { fecha:'Fecha', codigo:'Codigo', cantidad:'Cantidad' },
+  traslados:  { fecha:'Fecha', codigo:'Codigo', cantidad:'Cantidad', recibido:'Recibido' },
   facturas:   { fechaFactura:'Fecha Factura', factura:'Factura', codigo:'Codigo', cantidad:'Cantidad' },
   invfisico:  { codigoArticulo:'Codigo', bodegaDetalle:'Bodega Detalle', unidades:'Unidades en fisico' }
 };
@@ -2327,7 +2332,7 @@ function nuevoContadorRepeticiones(){ return new Map(); }
 // de Drive los traslados que ya estaban cargados no se dupliquen.
 function trasladoRowDedupKey(r){
   const f = dateToISO(toDateSafe(r.fecha));
-  return ['T', r.traslado, f, r.bodegaOrigen, r.bodegaDestino, r.codigo, toNumber(r.cantidad), r.usuario]
+  return ['T', r.traslado, f, r.bodegaOrigen, r.bodegaDestino, r.codigo, toNumber(r.cantidad), r.recibido, r.usuario]
     .map(v => String(v===undefined||v===null?'':v).trim().toUpperCase())
     .join('|');
 }
