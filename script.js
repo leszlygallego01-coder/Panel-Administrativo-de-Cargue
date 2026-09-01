@@ -2143,6 +2143,10 @@ function driveErrorMessage(err) {
     return 'La carpeta tiene archivos, pero ninguno se reconocio como Excel/CSV. [' + (detail || '') + ']';
   if (msg === 'NO_PERMISSION')
     return 'No tienes permiso de lectura sobre la carpeta de Google Drive.';
+  /* Limite interno del navegador al manejar textos enormes: pasa cuando hay
+     demasiadas filas cargadas de una sola vez. */
+  if (/Invalid string length/i.test(msg))
+    return 'Hay demasiados datos para procesarlos de una vez en este navegador. Cierra otras pestanas, recarga con Ctrl+F5 y vuelve a intentarlo; si sigue igual, envia las fuentes en dos tandas.';
 
   return 'Fallo la sincronizacion con Drive: ' + (msg || 'error desconocido') + (detail ? ' [' + detail + ']' : '');
 }
@@ -2433,13 +2437,16 @@ function backupEncodeValue(v){
   if(v instanceof Date) return isNaN(v) ? null : {__date: v.toISOString()};
   return v;
 }
-function backupEncodeRows(rows){
-  return (rows||[]).map(r=>{
-    if(!r || typeof r!=='object') return r;
-    const o={};
-    Object.keys(r).forEach(k=>{ o[k]=backupEncodeValue(r[k]); });
-    return o;
-  });
+/* Codifica UNA sola fila. Se usa justo antes de escribirla en el archivo
+   (carga perezosa): asi nunca se crea una segunda copia completa de las
+   tablas en memoria, que con mas de un millon de filas era lo que dejaba al
+   navegador sin espacio y hacia fallar el envio. */
+function backupEncodeRow(r){
+  if(!r || typeof r!=='object') return r;
+  const o={};
+  const claves=Object.keys(r);
+  for(let i=0;i<claves.length;i++){ o[claves[i]]=backupEncodeValue(r[claves[i]]); }
+  return o;
 }
 function backupDecodeRows(rows){
   return (rows||[]).map(r=>{
@@ -2467,6 +2474,11 @@ function descargarArchivo(nombre, blob){
   setTimeout(()=>URL.revokeObjectURL(url), 4000);
 }
 
+/* Arma la ficha del respaldo SIN duplicar las filas: se guarda la referencia
+   a las tablas ya cargadas y cada fila se codifica solo en el momento de
+   escribirla en el archivo (ver los generadores de abajo). Antes se creaba
+   aqui una copia completa de todo, lo que con volumenes grandes agotaba la
+   memoria del navegador y el envio terminaba en error. */
 async function construirRespaldo(){
   const all=await idbGetAll();
   const datasets=all.filter(r=>r && r.key && r.rows).map(r=>({
@@ -2476,7 +2488,9 @@ async function construirRespaldo(){
     updatedAt: r.updatedAt || '',
     batches: r.batches || null,
     rowCount: r.rows.length,
-    rows: backupEncodeRows(r.rows)
+    // Referencia directa: las filas se codifican una por una al serializar
+    rows: r.rows,
+    codificar: true
   }));
   let driveFiles=null;
   try{
@@ -2495,6 +2509,76 @@ async function construirRespaldo(){
   };
 }
 
+/* Serializa el respaldo por lineas (formato NDJSON) para el paquete del visor:
+   la primera linea trae la ficha general (sin filas) y despues va una linea por
+   fila. Asi ni el panel ni el visor tienen que armar un unico texto gigante,
+   que es lo que provocaba el error "Invalid string length" con mas de un
+   millon de filas. */
+function* backupTrozosNDJSON(backup){
+  const FILAS_POR_TROZO=2000;
+  const ficha={
+    app: backup.app,
+    version: backup.version,
+    generadoEn: backup.generadoEn,
+    totalFilas: backup.totalFilas,
+    driveFiles: backup.driveFiles||null,
+    datasets: backup.datasets.map(d=>({
+      key:d.key, title:d.title, fileName:d.fileName||'', updatedAt:d.updatedAt||'',
+      batches:d.batches||null, rowCount:d.rowCount
+    }))
+  };
+  yield JSON.stringify(ficha)+'\n';
+  for(let d=0; d<backup.datasets.length; d++){
+    const ds=backup.datasets[d];
+    const rows=ds.rows||[];
+    const cod=ds.codificar!==false;
+    for(let i=0;i<rows.length;i+=FILAS_POR_TROZO){
+      const hasta=Math.min(i+FILAS_POR_TROZO, rows.length);
+      let parte='';
+      for(let j=i;j<hasta;j++){
+        parte+=JSON.stringify(cod?backupEncodeRow(rows[j]):rows[j])+'\n';
+      }
+      yield parte;
+    }
+  }
+}
+
+/* Serializa el respaldo por partes (un trozo por bloque de filas) para no
+   construir nunca un unico texto JSON gigante: con mas de un millon de filas
+   un solo JSON.stringify revienta el limite de texto del navegador
+   ("Invalid string length"). */
+function* backupTrozosJSON(backup){
+  const FILAS_POR_TROZO=2000;
+  yield '{"app":'+JSON.stringify(backup.app)
+    +',"version":'+JSON.stringify(backup.version)
+    +',"generadoEn":'+JSON.stringify(backup.generadoEn)
+    +',"totalFilas":'+JSON.stringify(backup.totalFilas)
+    +',"driveFiles":'+JSON.stringify(backup.driveFiles||null)
+    +',"datasets":[';
+  for(let d=0; d<backup.datasets.length; d++){
+    const ds=backup.datasets[d];
+    yield (d?',':'')+'{"key":'+JSON.stringify(ds.key)
+      +',"title":'+JSON.stringify(ds.title)
+      +',"fileName":'+JSON.stringify(ds.fileName)
+      +',"updatedAt":'+JSON.stringify(ds.updatedAt)
+      +',"batches":'+JSON.stringify(ds.batches||null)
+      +',"rowCount":'+JSON.stringify(ds.rowCount)
+      +',"rows":[';
+    const rows=ds.rows||[];
+    const cod=ds.codificar!==false;
+    for(let i=0;i<rows.length;i+=FILAS_POR_TROZO){
+      const hasta=Math.min(i+FILAS_POR_TROZO, rows.length);
+      let parte='';
+      for(let j=i;j<hasta;j++){
+        parte+=(j>i?',':'')+JSON.stringify(cod?backupEncodeRow(rows[j]):rows[j]);
+      }
+      yield (i?',':'')+parte;
+    }
+    yield ']}';
+  }
+  yield ']}';
+}
+
 async function descargarRespaldoJSON(){
   const btn=document.getElementById('btnBackup');
   try{
@@ -2502,7 +2586,7 @@ async function descargarRespaldoJSON(){
     showToast('Preparando la copia de seguridad…');
     const backup=await construirRespaldo();
     if(!backup.datasets.length){ showToast('No hay datos cargados para respaldar.',true); return; }
-    const blob=new Blob([JSON.stringify(backup)],{type:'application/json'});
+    const blob=new Blob(Array.from(backupTrozosJSON(backup)),{type:'application/json'});
     descargarArchivo('Respaldo_Medisfarma_'+backupStamp()+'.json', blob);
     showToast('Copia de seguridad descargada: '+backup.datasets.length+' fuente(s) · '+fmtInt(backup.totalFilas)+' filas. Guárdala en un lugar seguro.');
   }catch(err){
@@ -2518,8 +2602,12 @@ async function descargarRespaldoJSON(){
    puede ver los indicadores (no puede cargar fuentes).
    ========================================================================= */
 const PAQUETE_APP_ID = 'medisfarma-paquete';
-const PAQUETE_VERSION = 1;
+const PAQUETE_VERSION_V1 = 1;
+const PAQUETE_VERSION_V2 = 2;
 const PAQUETE_ITERACIONES = 150000; // PBKDF2: coste de derivacion de la clave
+// Formato binario v2: 8 bytes magic + 4 bytes longCabecera + cabecera JSON corta + cifrado raw.
+// Evita los strings gigantes de base64 que desbordaban el limite de V8.
+const PAQUETE_MAGIC = new Uint8Array([0x4D,0x53,0x46,0x50,0x32,0x00,0x00,0x00]); // "MSFP2\0\0\0"
 
 // Convierte datos binarios a texto base64 por bloques (evita desbordar la pila
 // con archivos grandes).
@@ -2544,17 +2632,37 @@ async function paqueteDerivarClave(password, salt, usos){
     base, { name:'AES-GCM', length:256 }, false, usos
   );
 }
-// Comprime el texto si el navegador lo permite (el paquete pesa mucho menos).
-async function paqueteComprimir(texto){
-  const bytes=new TextEncoder().encode(texto);
-  if(typeof CompressionStream==='undefined') return { datos: bytes, comprimido:false };
+// Comprime el respaldo si el navegador lo permite (el paquete pesa mucho
+// menos). Recibe los trozos de texto uno por uno: nunca se junta todo en un
+// solo texto, para no chocar con el limite de texto del navegador.
+async function paqueteComprimir(trozos){
+  const cod=new TextEncoder();
+  if(typeof CompressionStream==='undefined'){
+    // Sin compresion: se van guardando los bloques de bytes por separado.
+    const partes=[]; let total=0;
+    for(const t of trozos){ const b=cod.encode(t); partes.push(b); total+=b.length; }
+    const todo=new Uint8Array(total); let pos=0;
+    for(const b of partes){ todo.set(b,pos); pos+=b.length; }
+    return { datos: todo, comprimido:false };
+  }
   try{
     const cs=new CompressionStream('gzip');
     const escritor=cs.writable.getWriter();
-    escritor.write(bytes); escritor.close();
-    const buf=await new Response(cs.readable).arrayBuffer();
+    const lectura=new Response(cs.readable).arrayBuffer();
+    for(const t of trozos){
+      await escritor.ready;
+      escritor.write(cod.encode(t));
+    }
+    await escritor.close();
+    const buf=await lectura;
     return { datos: new Uint8Array(buf), comprimido:true };
-  }catch(e){ return { datos: bytes, comprimido:false }; }
+  }catch(e){
+    const partes=[]; let total=0;
+    for(const t of trozos){ const b=cod.encode(t); partes.push(b); total+=b.length; }
+    const todo=new Uint8Array(total); let pos=0;
+    for(const b of partes){ todo.set(b,pos); pos+=b.length; }
+    return { datos: todo, comprimido:false };
+  }
 }
 
 /* Arma el paquete cifrado: pide la contrasena, comprime y cifra todo lo
@@ -2575,24 +2683,35 @@ async function paqueteConstruirSobre(){
   if(pass2!==pass){ showToast('Las contrasenas no coinciden. No se genero el paquete.',true); return null; }
   showToast('Cifrando el paquete para el visor…');
   await new Promise(r=>setTimeout(r,30));
-  const { datos, comprimido }=await paqueteComprimir(JSON.stringify(backup));
+  const { datos, comprimido }=await paqueteComprimir(backupTrozosNDJSON(backup));
   const salt=crypto.getRandomValues(new Uint8Array(16));
   const iv=crypto.getRandomValues(new Uint8Array(12));
   const clave=await paqueteDerivarClave(pass, salt, ['encrypt']);
   const cifrado=await crypto.subtle.encrypt({name:'AES-GCM', iv}, clave, datos);
-  const sobre={
+  // Formato v2: cabecera JSON corta (sin datos) + cifrado en bytes puros.
+  // Se eliminan los strings gigantes de base64 que causaban
+  // "Invalid string length" al serializar el sobre.
+  const cabeceraObj={
     app: PAQUETE_APP_ID,
-    version: PAQUETE_VERSION,
+    version: PAQUETE_VERSION_V2,
     generadoEn: new Date().toISOString(),
     fuentes: backup.datasets.length,
     totalFilas: backup.totalFilas,
     comprimido,
+    cuerpo: 'ndjson',
     iteraciones: PAQUETE_ITERACIONES,
     salt: bytesABase64(salt),
-    iv: bytesABase64(iv),
-    datos: bytesABase64(new Uint8Array(cifrado))
+    iv: bytesABase64(iv)
   };
-  return { sobre, backup };
+  const cabeceraBytes=new TextEncoder().encode(JSON.stringify(cabeceraObj));
+  const cabeceraLen=new Uint8Array(4);
+  new DataView(cabeceraLen.buffer).setUint32(0, cabeceraBytes.length, true); // little-endian
+  const binario=new Uint8Array(PAQUETE_MAGIC.length + 4 + cabeceraBytes.length + cifrado.byteLength);
+  binario.set(PAQUETE_MAGIC, 0);
+  binario.set(cabeceraLen, PAQUETE_MAGIC.length);
+  binario.set(cabeceraBytes, PAQUETE_MAGIC.length + 4);
+  binario.set(new Uint8Array(cifrado), PAQUETE_MAGIC.length + 4 + cabeceraBytes.length);
+  return { binario, backup };
 }
 
 async function publicarPaqueteVisor(){
@@ -2601,7 +2720,7 @@ async function publicarPaqueteVisor(){
     const armado=await paqueteConstruirSobre();
     if(!armado) return;
     if(btn){ btn.disabled=true; }
-    const blob=new Blob([JSON.stringify(armado.sobre)],{type:'application/json'});
+    const blob=new Blob([armado.binario],{type:PAQUETE_DRIVE_MIME});
     descargarArchivo('Paquete_Visor_Medisfarma_'+backupStamp()+'.medisfarma', blob);
     showToast('Paquete publicado: '+armado.backup.datasets.length+' fuente(s) · '+fmtInt(armado.backup.totalFilas)+' filas. Envialo junto con la contrasena a quienes solo consultan.');
   }catch(err){
@@ -2763,7 +2882,7 @@ async function enviarPaqueteACarpetaDrive(){
       '--'+limite+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n',
       JSON.stringify(metadatos),
       '\r\n--'+limite+'\r\nContent-Type: '+PAQUETE_DRIVE_MIME+'\r\n\r\n',
-      JSON.stringify(armado.sobre),
+      armado.binario,
       '\r\n--'+limite+'--\r\n'
     ], { type: 'multipart/related; boundary='+limite });
     const mb=(cuerpo.size/1048576);
