@@ -9,7 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" crossorigin>
 
 <!-- hoja de estilos del panel -->
-<link rel="stylesheet" href="styles.css?v=20260901l">
+<link rel="stylesheet" href="styles.css?v=20260903a">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <!-- Firebase SDK (compat) -->
@@ -123,7 +123,7 @@ try{ dbFirestore = firebase.firestore(); }catch(e){ console.warn('Firestore init
   <div class="action-bar">
     <button class="btn btn-primary" id="btnCalcular" disabled>Abrir resultados de los indicadores ↗</button>
     <button class="btn btn-export" id="btnPublicar">Publicar paquete para el visor</button>
-    <button class="btn btn-export" id="btnEnviarDrive" title="Sube el paquete cifrado a la carpeta de Google Drive de resultados; reemplaza el paquete anterior">Enviar los resultados de los indicadores a la carpeta</button>
+    <button class="btn btn-export" id="btnEnviarDrive" title="Sube a la carpeta de Google Drive un paquete cifrado por cada mes del Reporte de Dispensación; solo reemplaza los meses que vuelvas a enviar">Enviar los resultados de los indicadores a la carpeta</button>
     <button class="btn btn-export" id="btnBackup">Descargar copia de seguridad</button>
     <button class="btn btn-ghost" id="btnBackupExcel">Descargar datos en Excel</button>
     <button class="btn btn-ghost" id="btnRestaurar">Restaurar copia</button>
@@ -132,7 +132,7 @@ try{ dbFirestore = firebase.firestore(); }catch(e){ console.warn('Firestore init
     <span class="action-note" id="calcNote">Carga las fuentes obligatorias para dejar los datos listos.</span>
     <span class="action-note">La copia de seguridad (.json) guarda TODO lo cargado y se puede volver a cargar con “Restaurar copia”.</span>
     <span class="action-note">El paquete para el visor (.medisfarma) va protegido con contraseña: quienes consultan lo abren en la app de resultados y solo pueden ver, no cargar.</span>
-    <span class="action-note">“Enviar los resultados de los indicadores a la carpeta” deja el paquete cifrado en la carpeta de Google Drive de resultados y borra el anterior: la carpeta siempre tiene un solo archivo, el más reciente.</span>
+    <span class="action-note">“Enviar los resultados de los indicadores a la carpeta” deja en la carpeta de Google Drive <b>un paquete cifrado por cada mes</b> del Reporte de Dispensación. Los meses que ya estaban allí se conservan; solo se reemplaza el mes que vuelvas a enviar. En el visor se pueden elegir y combinar varios meses a la vez.</span>
     <div class="cargue-aviso" id="cargueAviso">Este panel solo carga y respalda datos. Los tableros y descargas de indicadores están en la app “Resultados de los Indicadores”.</div>
   </div>
 
@@ -145,6 +145,6 @@ try{ dbFirestore = firebase.firestore(); }catch(e){ console.warn('Firestore init
 
 <div class="toast" id="toast"></div>
 
-<script src="script.js?v=20260901l"></script>
+<script src="script.js?v=20260903a"></script>
 </body>
 </html>
