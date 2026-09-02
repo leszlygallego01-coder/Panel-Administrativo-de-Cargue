@@ -2479,19 +2479,62 @@ function descargarArchivo(nombre, blob){
    escribirla en el archivo (ver los generadores de abajo). Antes se creaba
    aqui una copia completa de todo, lo que con volumenes grandes agotaba la
    memoria del navegador y el envio terminaba en error. */
-async function construirRespaldo(){
+/* Mes (AAAA-MM) al que pertenece una linea del Reporte de Dispensacion.
+   Devuelve cadena vacia cuando la fila no trae una fecha entendible. */
+function mesDeFilaReporte(r){
+  const f=toDateSafe(r && r.fechaDispensacion);
+  if(!f) return '';
+  const iso=dateToISO(f);
+  return iso ? iso.slice(0,7) : '';
+}
+// Nombre del periodo tal como se usa en el archivo: AAAA_MM.
+function mesParaNombre(mes){ return String(mes||'').replace('-','_'); }
+
+// Texto legible del periodo para los avisos en pantalla: "agosto de 2026".
+const MESES_ES=['enero','febrero','marzo','abril','mayo','junio','julio',
+                'agosto','septiembre','octubre','noviembre','diciembre'];
+function etiquetaMes(mes){
+  const m=/^(\d{4})-(\d{2})$/.exec(String(mes||''));
+  if(!m) return String(mes||'');
+  const i=parseInt(m[2],10)-1;
+  return (MESES_ES[i]||m[2])+' de '+m[1];
+}
+
+/* Lista los meses presentes en el Reporte de Dispensacion, del mas antiguo al
+   mas reciente. Es la base para partir el envio a la carpeta: un archivo por mes. */
+async function mesesDelReporte(){
+  let rec=null;
+  try{ rec=await idbGet('reporte'); }catch(e){ rec=null; }
+  const filas=(rec && rec.rows) ? rec.rows : [];
+  const vistos=new Set();
+  for(let i=0;i<filas.length;i++){
+    const m=mesDeFilaReporte(filas[i]);
+    if(m) vistos.add(m);
+  }
+  return Array.from(vistos).sort();
+}
+
+async function construirRespaldo(opciones){
+  const soloMes=(opciones && opciones.mes) ? String(opciones.mes) : '';
   const all=await idbGetAll();
-  const datasets=all.filter(r=>r && r.key && r.rows).map(r=>({
-    key: r.key,
-    title: (DATASETS.find(d=>d.key===r.key)||{}).title || r.key,
-    fileName: r.fileName || '',
-    updatedAt: r.updatedAt || '',
-    batches: r.batches || null,
-    rowCount: r.rows.length,
-    // Referencia directa: las filas se codifican una por una al serializar
-    rows: r.rows,
-    codificar: true
-  }));
+  const datasets=all.filter(r=>r && r.key && r.rows).map(r=>{
+    // Solo el Reporte de Dispensacion se recorta al mes pedido; las demas
+    // tarjetas (catalogos y consolidados) viajan completas en cada archivo.
+    const filas=(soloMes && r.key==='reporte')
+      ? r.rows.filter(x=>mesDeFilaReporte(x)===soloMes)
+      : r.rows;
+    return {
+      key: r.key,
+      title: (DATASETS.find(d=>d.key===r.key)||{}).title || r.key,
+      fileName: r.fileName || '',
+      updatedAt: r.updatedAt || '',
+      batches: r.batches || null,
+      rowCount: filas.length,
+      // Referencia directa: las filas se codifican una por una al serializar
+      rows: filas,
+      codificar: true
+    };
+  });
   let driveFiles=null;
   try{
     driveFiles={
@@ -2503,6 +2546,8 @@ async function construirRespaldo(){
     app: BACKUP_APP_ID,
     version: BACKUP_VERSION,
     generadoEn: new Date().toISOString(),
+    // Periodo (AAAA-MM) del Reporte de Dispensacion incluido, o vacio si va completo.
+    periodo: soloMes,
     totalFilas: datasets.reduce((a,b)=>a+b.rowCount,0),
     driveFiles,
     datasets
@@ -2520,6 +2565,7 @@ function* backupTrozosNDJSON(backup){
     app: backup.app,
     version: backup.version,
     generadoEn: backup.generadoEn,
+    periodo: backup.periodo||'',
     totalFilas: backup.totalFilas,
     driveFiles: backup.driveFiles||null,
     datasets: backup.datasets.map(d=>({
@@ -2665,23 +2711,38 @@ async function paqueteComprimir(trozos){
   }
 }
 
-/* Arma el paquete cifrado: pide la contrasena, comprime y cifra todo lo
-   cargado. Devuelve null si el usuario cancela o si algo no cuadra (el aviso
-   al usuario ya se muestra aqui). Lo usan tanto la descarga como el envio a
-   la carpeta de Drive. */
-async function paqueteConstruirSobre(){
-  if(!(window.crypto && crypto.subtle)){
-    showToast('Este navegador no permite cifrar el paquete. Usa Chrome o Edge actualizado.',true); return null;
-  }
-  const backup=await construirRespaldo();
-  if(!backup.datasets.length){ showToast('No hay datos cargados para publicar.',true); return null; }
+/* Pide y confirma la contrasena del paquete. Devuelve null si el usuario
+   cancela o si algo no cuadra (el aviso ya se muestra aqui). Se pide UNA sola
+   vez aunque despues se generen varios archivos (uno por mes). */
+function paquetePedirContrasena(){
   const pass=prompt('Contrasena para proteger el paquete del visor (minimo 6 caracteres).\n\nLa misma contrasena se le entrega a quienes solo consultan.');
   if(pass===null) return null;
   if(String(pass).length<6){ showToast('La contrasena debe tener al menos 6 caracteres.',true); return null; }
   const pass2=prompt('Escribe otra vez la contrasena para confirmarla.');
   if(pass2===null) return null;
   if(pass2!==pass){ showToast('Las contrasenas no coinciden. No se genero el paquete.',true); return null; }
-  showToast('Cifrando el paquete para el visor…');
+  return pass;
+}
+
+/* Arma el paquete cifrado: pide la contrasena, comprime y cifra todo lo
+   cargado. Devuelve null si el usuario cancela o si algo no cuadra (el aviso
+   al usuario ya se muestra aqui). Lo usan tanto la descarga como el envio a
+   la carpeta de Drive.
+   opciones.mes  = periodo AAAA-MM para recortar el Reporte de Dispensacion.
+   opciones.pass = contrasena ya confirmada (para no volver a preguntarla). */
+async function paqueteConstruirSobre(opciones){
+  const op=opciones||{};
+  if(!(window.crypto && crypto.subtle)){
+    showToast('Este navegador no permite cifrar el paquete. Usa Chrome o Edge actualizado.',true); return null;
+  }
+  const backup=await construirRespaldo({ mes: op.mes||'' });
+  if(!backup.datasets.length){ showToast('No hay datos cargados para publicar.',true); return null; }
+  let pass=op.pass;
+  if(!pass){
+    pass=paquetePedirContrasena();
+    if(pass===null) return null;
+  }
+  showToast(op.mes ? ('Cifrando el paquete de '+etiquetaMes(op.mes)+'\u2026') : 'Cifrando el paquete para el visor\u2026');
   await new Promise(r=>setTimeout(r,30));
   const { datos, comprimido }=await paqueteComprimir(backupTrozosNDJSON(backup));
   const salt=crypto.getRandomValues(new Uint8Array(16));
@@ -2695,6 +2756,8 @@ async function paqueteConstruirSobre(){
     app: PAQUETE_APP_ID,
     version: PAQUETE_VERSION_V2,
     generadoEn: new Date().toISOString(),
+    // Periodo del Reporte de Dispensacion que trae este archivo (vacio = todo).
+    periodo: backup.periodo||'',
     fuentes: backup.datasets.length,
     totalFilas: backup.totalFilas,
     comprimido,
@@ -2731,9 +2794,10 @@ async function publicarPaqueteVisor(){
 
 /* =========================================================================
    Envio del paquete a la carpeta de Drive "Resultados de los indicadores"
-   La carpeta NO es acumulativa: antes de subir el paquete nuevo se borran
-   los archivos que ya estuvieran alli, para que el visor siempre encuentre
-   uno solo (el mas reciente).
+   La carpeta guarda UN archivo POR MES del Reporte de Dispensacion
+   (resultados_AAAA_MM.medisfarma). Al enviar de nuevo se reemplaza solo el
+   archivo del mismo periodo: los meses anteriores que ya estaban alli se
+   conservan, y el visor puede bajar y combinar los que necesite.
    ========================================================================= */
 const PAQUETE_DRIVE_MIME = 'application/octet-stream';
 const PAQUETE_TIMEOUT_OAUTH = 120000;  // 2 min esperando la ventana de Google
@@ -2826,6 +2890,40 @@ async function driveTokenPuedeEscribir(accessToken){
   }catch(e){ return null; }
 }
 
+/* Nombre del archivo que se guarda en la carpeta para un mes concreto.
+   Un nombre fijo por periodo permite reconocerlo y reemplazarlo la proxima vez. */
+function nombreArchivoDelMes(mes){
+  return mes ? ('resultados_'+mesParaNombre(mes)+'.medisfarma') : ('resultados_completo.medisfarma');
+}
+
+/* Reconoce si un archivo que ya esta en la carpeta corresponde al periodo dado.
+   Tambien reconoce los archivos del formato anterior (un unico
+   "Paquete_Visor_Medisfarma_..."), que se reemplazan por los de cada mes. */
+function archivoEsDelPeriodo(nombre, mes){
+  const n=String(nombre||'');
+  if(/^Paquete_Visor_Medisfarma_/i.test(n)) return true;
+  return n===nombreArchivoDelMes(mes);
+}
+
+// Sube un paquete ya cifrado a la carpeta (metadatos + contenido en un solo envio).
+async function subirPaqueteACarpeta(token, nombre, binario, alAvanzar){
+  const metadatos={ name: nombre, parents: [DRIVE_FOLDER_PAQUETE], mimeType: PAQUETE_DRIVE_MIME };
+  const limite='medisfarma'+Date.now();
+  const cuerpo=new Blob([
+    '--'+limite+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n',
+    JSON.stringify(metadatos),
+    '\r\n--'+limite+'\r\nContent-Type: '+PAQUETE_DRIVE_MIME+'\r\n\r\n',
+    binario,
+    '\r\n--'+limite+'--\r\n'
+  ], { type: 'multipart/related; boundary='+limite });
+  const mb=(cuerpo.size/1048576);
+  await driveSubirConProgreso(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name&supportsAllDrives=true',
+    token, cuerpo, 'multipart/related; boundary='+limite, alAvanzar
+  );
+  return mb;
+}
+
 async function enviarPaqueteACarpetaDrive(){
   const btn=document.getElementById('btnEnviarDrive');
   const etiqueta='Enviar los resultados de los indicadores a la carpeta';
@@ -2857,46 +2955,56 @@ async function enviarPaqueteACarpetaDrive(){
     let previos=[];
     previos=await conTiempoLimite(listarArchivosCarpetaPaquete(token), PAQUETE_TIMEOUT_LISTA, 'LISTA_TIMEOUT');
 
-    // 2) Ahora si: contrasena, compresion y cifrado
-    paso('Preparando el paquete…');
-    const armado=await paqueteConstruirSobre();
-    if(!armado) return;
+    /* 2) Averiguar los meses que trae el Reporte de Dispensacion: se envia un
+       archivo por cada mes, con la dispensacion de ese mes y las demas
+       tarjetas completas. Si no se reconoce ninguna fecha, se envia uno solo. */
+    paso('Revisando los meses…');
+    let meses=await mesesDelReporte();
+    if(!meses.length) meses=[''];
 
-    // 3) Borrar lo que ya hubiera en la carpeta (no acumulativo)
-    paso('Reemplazando el anterior…');
-    let borrados=0;
-    for(let i=0;i<previos.length;i++){
-      try{
-        await conTiempoLimite(
-          driveApiSend('https://www.googleapis.com/drive/v3/files/'+previos[i].id+'?supportsAllDrives=true', token, 'DELETE'),
-          PAQUETE_TIMEOUT_LISTA, 'BORRADO_TIMEOUT');
-        borrados++;
-      }catch(e){ console.warn('No se pudo borrar '+previos[i].name, e); }
+    // 3) La contrasena se pide UNA vez, aunque se generen varios archivos.
+    const pass=paquetePedirContrasena();
+    if(pass===null) return;
+
+    let enviados=0, reemplazados=0, filasTotales=0;
+    const resumen=[];
+    for(let m=0;m<meses.length;m++){
+      const mes=meses[m];
+      const cuantos=meses.length>1 ? (' ('+(m+1)+' de '+meses.length+')') : '';
+      const nombreMes=mes ? etiquetaMes(mes) : 'todos los datos';
+
+      paso('Preparando '+nombreMes+cuantos+'…');
+      const armado=await paqueteConstruirSobre({ mes, pass });
+      if(!armado) return;
+
+      // Se borra SOLO el archivo del mismo periodo (y los del formato anterior).
+      const aReemplazar=previos.filter(p=>archivoEsDelPeriodo(p.name, mes));
+      if(aReemplazar.length){
+        paso('Reemplazando '+nombreMes+'…');
+        for(let i=0;i<aReemplazar.length;i++){
+          try{
+            await conTiempoLimite(
+              driveApiSend('https://www.googleapis.com/drive/v3/files/'+aReemplazar[i].id+'?supportsAllDrives=true', token, 'DELETE'),
+              PAQUETE_TIMEOUT_LISTA, 'BORRADO_TIMEOUT');
+            reemplazados++;
+            previos=previos.filter(p=>p.id!==aReemplazar[i].id);
+          }catch(e){ console.warn('No se pudo borrar '+aReemplazar[i].name, e); }
+        }
+      }
+
+      paso('Subiendo '+nombreMes+' 0%…');
+      showToast('Subiendo a la carpeta de Drive: '+nombreMes+cuantos+'…');
+      await subirPaqueteACarpeta(token, nombreArchivoDelMes(mes), armado.binario,
+        (pct)=>{ paso('Subiendo '+nombreMes+' '+pct+'%…'); });
+
+      enviados++;
+      filasTotales+=armado.backup.totalFilas||0;
+      resumen.push(nombreMes+' ('+fmtInt(armado.backup.totalFilas||0)+' filas)');
     }
 
-    // 4) Subir el paquete nuevo (multipart: metadatos + contenido en un solo envio)
-    const nombre='Paquete_Visor_Medisfarma_'+backupStamp()+'.medisfarma';
-    const metadatos={ name: nombre, parents: [DRIVE_FOLDER_PAQUETE], mimeType: PAQUETE_DRIVE_MIME };
-    const limite='medisfarma'+Date.now();
-    const cuerpo=new Blob([
-      '--'+limite+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n',
-      JSON.stringify(metadatos),
-      '\r\n--'+limite+'\r\nContent-Type: '+PAQUETE_DRIVE_MIME+'\r\n\r\n',
-      armado.binario,
-      '\r\n--'+limite+'--\r\n'
-    ], { type: 'multipart/related; boundary='+limite });
-    const mb=(cuerpo.size/1048576);
-    paso('Subiendo 0%…');
-    showToast('Subiendo el paquete a la carpeta de Drive ('+(mb<1?'<1':mb.toFixed(1))+' MB)…');
-    await driveSubirConProgreso(
-      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name&supportsAllDrives=true',
-      token, cuerpo, 'multipart/related; boundary='+limite,
-      (pct)=>{ paso('Subiendo '+pct+'%…'); }
-    );
-
-    showToast('Resultados enviados a la carpeta de Drive: '+armado.backup.datasets.length+' fuente(s) · '
-      + fmtInt(armado.backup.totalFilas) + ' filas'
-      + (borrados ? ' (se reemplazo el paquete anterior)' : '')
+    showToast('Resultados enviados a la carpeta de Drive: '+enviados+' archivo(s) por mes · '
+      + fmtInt(filasTotales) + ' filas en total — ' + resumen.join(', ')
+      + (reemplazados ? '. Se reemplazaron los envios anteriores de esos meses' : '')
       + '. Entrega la contrasena a quienes consultan el visor.');
   }catch(err){
     console.error(err);
