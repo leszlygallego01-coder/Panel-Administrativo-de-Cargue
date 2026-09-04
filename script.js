@@ -207,9 +207,14 @@ const DATASETS = [
   },
   {
     key: 'bodegas', tabla: 'Tabla_5', title: 'Bodega y Zona', required: true,
-    desc: 'Catálogo de bodegas con su zona asociada.',
-    cols: ['Bodega','Zona'],
-    fields: { bodega: ['BODEGA'], zona: ['ZONA'] }
+    desc: 'Catálogo de bodegas con su zona y su departamento asociados. La columna Departamento es opcional: si viene, alimenta el filtro de departamento del visor.',
+    cols: ['Bodega','Zona','Departamento'],
+    fields: {
+      bodega: ['BODEGA'],
+      zona: ['ZONA'],
+      // Departamento de la bodega: se guarda para que el visor pueda filtrar por él.
+      departamento: ['DEPARTAMENTO','DEPARTAMENTO BODEGA','DEPTO','DPTO']
+    }
   },
   {
     key: 'agotados', tabla: 'Tabla_7', title: 'Estado de la Molécula', required: true,
@@ -679,7 +684,9 @@ const FIELD_FALLBACK_KEYWORDS = {
   contrato: ['CONTRATO'],
   diferencia: ['DIFERENCIA'],
   // Columna "Recibido" de Traslados (valores tipo Recibido / No Recibido)
-  recibido: ['RECIBIDO','ESTADO RECIB','NO RECIBIDO']
+  recibido: ['RECIBIDO','ESTADO RECIB','NO RECIBIDO'],
+  // Departamento de la bodega (tabla Bodega y Zona)
+  departamento: ['DEPARTAMENTO','DEPTO','DPTO']
 };
 /* Busca una columna por palabra clave, pero SIEMPRE prefiriendo la coincidencia más
    precisa. En un archivo con ~130 columnas hay muchos encabezados que contienen
