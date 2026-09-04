@@ -1668,6 +1668,7 @@ async function syncReporteFromDrive() {
           // que permite reconocer después un cumplimiento llegado en un cargue posterior.
           if (!prevRow._fechaCargue) prevRow._fechaCargue = nowISO;
           if (!prevRow._secCargue) prevRow._secCargue = secArchivo;
+          if (!prevRow._archivoCargue) prevRow._archivoCargue = f.name;
           // La fila ya estaba guardada: completamos los campos que estén vacíos
           // (Estado, Usuario Creación, etc.) para no perder datos del acumulado antiguo.
           if (completarCamposFaltantes(prevRow, rows[j])) reparadas++;
@@ -1677,6 +1678,8 @@ async function syncReporteFromDrive() {
         }
         rows[j]._fechaCargue = nowISO;
         rows[j]._secCargue = secArchivo;
+        // Nombre del archivo de origen: permite saber después en qué reporte se cargó la línea.
+        rows[j]._archivoCargue = f.name;
         seen.set(k, rows[j]); merged.push(rows[j]); added++;
       }
       totalAdded += added; totalSkipped += skipped; totalReparadas += reparadas; totalSoportesNuevos += soportesNuevos;
@@ -1684,7 +1687,7 @@ async function syncReporteFromDrive() {
 
       // Solo registramos un "cargue" si aportó filas nuevas
       if (added > 0) {
-        batches.push({ fileName: f.name, rowCount: rows.length, addedCount: added, skippedCount: skipped, uploadedAt: new Date().toISOString() });
+        batches.push({ fileName: f.name, secCargue: secArchivo, rowCount: rows.length, addedCount: added, skippedCount: skipped, uploadedAt: new Date().toISOString() });
       }
     }
 
@@ -1838,19 +1841,22 @@ async function acumularCarpetaDrive(accessToken, files, KEY, def) {
         // primera vez; no se mueve hacia atrás.
         if (!prevRow._fechaCargue) prevRow._fechaCargue = nowISO;
         if (!prevRow._secCargue) prevRow._secCargue = secArchivo;
+        if (!prevRow._archivoCargue) prevRow._archivoCargue = f.name;
         // La línea ya estaba: completamos los campos que estuvieran vacíos
         completarCamposFaltantes(prevRow, rows[j]);
         continue;
       }
       rows[j]._fechaCargue = nowISO;
       rows[j]._secCargue = secArchivo;
+      // Nombre del archivo de origen (Reporte de Dispensación en el que entró la línea).
+      rows[j]._archivoCargue = f.name;
       seen.set(k, rows[j]); merged.push(rows[j]); added++;
     }
     totalAdded += added; totalSkipped += skipped; lastFileName = f.name;
 
     // Solo cuenta como "cargue" el archivo que aportó líneas nuevas
     if (added > 0) {
-      batches.push({ fileName: f.name, rowCount: rows.length, addedCount: added, skippedCount: skipped, uploadedAt: new Date().toISOString() });
+      batches.push({ fileName: f.name, secCargue: secArchivo, rowCount: rows.length, addedCount: added, skippedCount: skipped, uploadedAt: new Date().toISOString() });
     }
   }
 
@@ -2405,6 +2411,7 @@ async function handleFileSelected(key,file){
           // primera vez: es la referencia para reconocer cumplimientos posteriores.
           if(!prevRow._fechaCargue) prevRow._fechaCargue = nowISO;
           if(!prevRow._secCargue) prevRow._secCargue = secArchivo;
+          if(!prevRow._archivoCargue) prevRow._archivoCargue = file.name;
           // Fila ya guardada: rellenamos los campos vacíos (Estado, Usuario Creación...)
           if(completarCamposFaltantes(prevRow, r)) reparadas++;
           // ¿La línea llegó ahora CON soporte cuando antes estaba en 0 / NO TIENE?
@@ -2415,9 +2422,11 @@ async function handleFileSelected(key,file){
         // Periódico (cortes de 1-10 / 11-20 / 21-31), comparando cargue contra cargue.
         r._fechaCargue = nowISO;
         r._secCargue = secArchivo;
+        // Nombre del archivo subido: queda en la fila para reportarlo en las descargas.
+        r._archivoCargue = file.name;
         seen.set(k, r); merged.push(r); added++;
       });
-      const batches = prevBatches.concat([{fileName:file.name, rowCount:rows.length, addedCount:added, skippedCount:skipped, uploadedAt:new Date().toISOString()}]);
+      const batches = prevBatches.concat([{fileName:file.name, secCargue:secArchivo, rowCount:rows.length, addedCount:added, skippedCount:skipped, uploadedAt:new Date().toISOString()}]);
       await idbPut({key, rows:merged, fileName:file.name, batches, updatedAt:new Date().toISOString()});
       showToast('"'+def.title+'": +'+fmtInt(added)+' filas nuevas de '+fmtInt(rows.length)+' leídas'+(skipped?(' ('+fmtInt(skipped)+' ya estaban cargadas)'):'')+(reparadas?(' · '+fmtInt(reparadas)+' filas actualizadas con Estado/Usuario'):'')+(soportesNuevos?(' · '+fmtInt(soportesNuevos)+' líneas que ahora SÍ traen soporte'):'')+'. Total acumulado: '+fmtInt(merged.length)+' filas.');
     }else{
