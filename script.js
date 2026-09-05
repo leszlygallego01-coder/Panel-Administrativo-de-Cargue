@@ -170,7 +170,7 @@ const DATASETS = [
   {
     key: 'reporte', tabla: 'Tabla_1', title: 'Reporte de Dispensación', required: true, accumulate: true,
     desc: 'Base transaccional principal. Cargue diario: cada archivo que subas se ACUMULA con lo ya guardado (no lo reemplaza); las filas repetidas se descartan automáticamente. Esta tarjeta ya NO acepta cargue manual: sus datos provienen exclusivamente de la carpeta de Google Drive.',
-    cols: ['Documento','Fecha de Dispensación','EPS','Contrato','Código de Articulo','Descripción','Unidades','Cantidad Autorizada','Diferencia','Bodega Detalle','Soporte','Estado','Usuario Creación','DESCRIPCION CIE 10'],
+    cols: ['Documento','Fecha de Dispensación','EPS','Contrato','Código de Articulo','Descripción','Unidades','Cantidad Autorizada','Diferencia','Lote','Fecha de Vencimiento','Bodega Detalle','Soporte','Estado','Usuario Creación','DESCRIPCION CIE 10'],
     fields: {
       documento: ['DOCUMENTO'],
       codigoCie10: ['DESCRIPCION CIE 10','DESCRIPCIÓN CIE 10','DESCRIPCION CIE10','DESCRIPCIÓN CIE10','DESCRIPCION CIE-10','DESCRIPCION DIAGNOSTICO','DIAGNOSTICO','DIAGNÓSTICO','CODIGO CIE 10','CODIGO CIE10','CODIGO CIE-10','CÓDIGO CIE 10','CIE 10','CIE10','CIE-10'],
@@ -189,6 +189,10 @@ const DATASETS = [
       cantidadAutorizada: ['CANTIDAD AUTORIZADA','CANT AUTORIZADA','CANTIDAD AUTORIZADO'],
       diferencia: ['DIFERENCIA'],
       bodegaDetalle: ['BODEGA DETALLE','BODEGA','BODEGADETALLE'],
+      // Lote y vencimiento del medicamento dispensado. En el archivo van justo
+      // después de la columna Diferencia y alimentan la Trazabilidad de Lotes.
+      lote: ['LOTE','NUMERO LOTE','NUMERO DE LOTE','NÚMERO LOTE','NRO LOTE','NO LOTE','N LOTE','LOTE ARTICULO','LOTE MEDICAMENTO','LOTE DESPACHADO','LOTE ENVIADO','LOTE RECIBIDO'],
+      fechaVencimiento: ['FECHA DE VENCIMIENTO','FECHA VENCIMIENTO','FECHA DE VENCIMIENTO LOTE','FECHA VTO','FECHA VTO.','VENCIMIENTO','FECHA VENC.','FEC VENCIMIENTO'],
       // "Soporte" del reporte = "Cantidad Soportes" del archivo original.
       soportes: ['CANTIDAD SOPORTES','CANTIDAD SOPORTE','CANTIDAD DE SOPORTES','SOPORTE','SOPORTES','NRO SOPORTES','NUMERO SOPORTES']
     }
@@ -242,7 +246,7 @@ const DATASETS = [
   {
     key: 'traslados', tabla: 'Tabla_8', title: 'Traslados', required: false, accumulate: true,
     desc: 'Traslados entre bodegas realizados por cada usuario. Los datos provienen exclusivamente de la carpeta de Google Drive y se ACUMULAN: cada sincronización suma los traslados nuevos y no borra lo ya cargado. El Codigo se cruza con la tabla Homólogo para saber si la molécula es Pareto o No Pareto.',
-    cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Recibido','Usuario'],
+    cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Lote','Fecha de Vencimiento','Recibido','Usuario'],
     fields: {
       traslado: ['TRASLADO','NRO TRASLADO','NUMERO TRASLADO','NÚMERO TRASLADO','No TRASLADO','DOCUMENTO TRASLADO','DOCUMENTO','CONSECUTIVO'],
       fecha: ['FECHA','FECHA TRASLADO','FECHA DE TRASLADO','FECHA DEL TRASLADO'],
@@ -251,6 +255,10 @@ const DATASETS = [
       codigo: ['CODIGO','CÓDIGO','CODIGO ARTICULO','CODIGO DE ARTICULO','COD ARTICULO','COD. ARTICULO'],
       descripcion: ['DESCRIPCION','DESCRIPCIÓN','DESCRIPCION ARTICULO','DESCRIPCIÓN ARTICULO','ARTICULO','NOMBRE ARTICULO','PRODUCTO'],
       cantidad: ['CANTIDAD','CANTIDAD TRASLADADA','UNIDADES','CANT','CANT.'],
+      // Lote y vencimiento del medicamento enviado/recibido entre bodegas:
+      // es la llave que permite seguir el lote hasta la dispensa subsanada.
+      lote: ['LOTE','NUMERO LOTE','NUMERO DE LOTE','NÚMERO LOTE','NRO LOTE','NO LOTE','N LOTE','LOTE ARTICULO','LOTE MEDICAMENTO','LOTE DESPACHADO','LOTE ENVIADO','LOTE RECIBIDO'],
+      fechaVencimiento: ['FECHA DE VENCIMIENTO','FECHA VENCIMIENTO','FECHA DE VENCIMIENTO LOTE','FECHA VTO','FECHA VTO.','VENCIMIENTO','FECHA VENC.','FEC VENCIMIENTO'],
       // Estado de recepción del traslado: 'Recibido' o 'No Recibido'. Solo las líneas
       // NO recibidas se consideran pendientes en la Base Supervisores.
       recibido: ['RECIBIDO','RECIBIDA','ESTADO RECIBIDO','ESTADO DEL TRASLADO','ESTADO TRASLADO','ESTADO','RECEPCION','RECEPCIÓN'],
