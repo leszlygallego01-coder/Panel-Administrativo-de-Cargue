@@ -170,13 +170,19 @@ const DATASETS = [
   {
     key: 'reporte', tabla: 'Tabla_1', title: 'Reporte de Dispensación', required: true, accumulate: true,
     desc: 'Base transaccional principal. Cargue diario: cada archivo que subas se ACUMULA con lo ya guardado (no lo reemplaza); las filas repetidas se descartan automáticamente. Esta tarjeta ya NO acepta cargue manual: sus datos provienen exclusivamente de la carpeta de Google Drive.',
-    cols: ['Documento','Fecha de Dispensación','EPS','Contrato','Código de Articulo','Descripción','Unidades','Cantidad Autorizada','Diferencia','Lote','Fecha de Vencimiento','Bodega Detalle','Soporte','Estado','Usuario Creación','DESCRIPCION CIE 10'],
+    cols: ['Documento','Fecha Dispensacion','Fecha Origen Dispensacion','EPS','Contrato','Id Contrato','Código de Articulo','Descripción','Unidades','Cantidad Autorizada','Diferencia','Lote','Fecha Lote','Bodega Detalle','Cantidad Soportes','Estado','Usuario Creación','DESCRIPCION CIE 10'],
     fields: {
       documento: ['DOCUMENTO'],
       codigoCie10: ['DESCRIPCION CIE 10','DESCRIPCIÓN CIE 10','DESCRIPCION CIE10','DESCRIPCIÓN CIE10','DESCRIPCION CIE-10','DESCRIPCION DIAGNOSTICO','DIAGNOSTICO','DIAGNÓSTICO','CODIGO CIE 10','CODIGO CIE10','CODIGO CIE-10','CÓDIGO CIE 10','CIE 10','CIE10','CIE-10'],
       estadoDispensa: ['ESTADO','ESTADO DISPENSA','ESTADO DE LA DISPENSA','ESTADO DE DISPENSA'],
       usuarioCreacion: ['USUARIO CREACION','USUARIO CREACIÓN','USUARIO DE CREACION','USUARIO DE CREACIÓN','USUARIO CREADOR','USUARIO'],
       fechaDispensacion: ['FECHA DE DISPENSACION','FECHA DISPENSACION','FECHA DISPENSACIÓN','FECHA DISPENSA','FECHA'],
+      // FECHA ORIGEN DE DISPENSACIÓN: fecha fija e inmutable del registro inicial. Se
+      // conserva tal cual llega en el archivo (el visor le quita la hora y deja solo el día).
+      fechaOrigenDispensacion: ['FECHA ORIGEN DISPENSACION','FECHA ORIGEN DE DISPENSACION','FECHA ORIGEN DISPENSACIÓN','FECHA ORIGEN DE DISPENSACIÓN','FECHA DE ORIGEN DISPENSACION','FECHA DE ORIGEN DE DISPENSACION','FECHA ORIGEN'],
+      // ID CONTRATO: identificador numérico del contrato. Alimenta el filtro "Id Contrato"
+      // y la identidad de la dispensa (Documento + Id Contrato) en Soporte Cápita.
+      idContrato: ['ID CONTRATO','IDCONTRATO','ID DE CONTRATO','ID_CONTRATO','IDENTIFICADOR CONTRATO','IDENTIFICADOR DE CONTRATO','NRO CONTRATO','NUMERO CONTRATO','NÚMERO CONTRATO','CONTRATO ID','COD CONTRATO','CODIGO CONTRATO'],
       // La columna de EPS puede venir con el nombre largo del archivo original:
       // "Sigla Comercial Cliente/EPS(Entidad OutSorcing)" (con o sin espacios/paréntesis),
       // o abreviada como "EPS(Entidad OutSorcing)".
@@ -192,7 +198,10 @@ const DATASETS = [
       // Lote y vencimiento del medicamento dispensado. En el archivo van justo
       // después de la columna Diferencia y alimentan la Trazabilidad de Lotes.
       lote: ['LOTE','NUMERO LOTE','NUMERO DE LOTE','NÚMERO LOTE','NRO LOTE','NO LOTE','N LOTE','LOTE ARTICULO','LOTE MEDICAMENTO','LOTE DESPACHADO','LOTE ENVIADO','LOTE RECIBIDO'],
-      fechaVencimiento: ['FECHA DE VENCIMIENTO','FECHA VENCIMIENTO','FECHA DE VENCIMIENTO LOTE','FECHA VTO','FECHA VTO.','VENCIMIENTO','FECHA VENC.','FEC VENCIMIENTO'],
+      // Lote y fecha de lote del medicamento dispensado. En la nueva estructura la
+      // columna se llama "Fecha Lote"; se aceptan también las variantes antiguas de
+      // vencimiento. Alimentan la Trazabilidad de Lotes y Traslados Subsanados.
+      fechaVencimiento: ['FECHA LOTE','FECHA DE LOTE','FECHA DEL LOTE','FECHA DE VENCIMIENTO','FECHA VENCIMIENTO','FECHA DE VENCIMIENTO LOTE','FECHA VTO','FECHA VTO.','VENCIMIENTO','FECHA VENC.','FEC VENCIMIENTO'],
       // "Soporte" del reporte = "Cantidad Soportes" del archivo original.
       soportes: ['CANTIDAD SOPORTES','CANTIDAD SOPORTE','CANTIDAD DE SOPORTES','SOPORTE','SOPORTES','NRO SOPORTES','NUMERO SOPORTES']
     }
@@ -690,6 +699,8 @@ const FIELD_FALLBACK_KEYWORDS = {
   unidades: ['UNIDADES DISPENSADAS','UNIDADES'],
   descripcion: ['DESCRIPCION ARTICULO','NOMBRE ARTICULO'],
   contrato: ['CONTRATO'],
+  idContrato: ['ID CONTRATO','ID DE CONTRATO','IDENTIFICADOR CONTRATO','NUMERO CONTRATO','NRO CONTRATO'],
+  fechaOrigenDispensacion: ['FECHA ORIGEN DISPENS','FECHA ORIGEN DE DISPENS','FECHA DE ORIGEN DISPENS'],
   diferencia: ['DIFERENCIA'],
   // Columna "Recibido" de Traslados (valores tipo Recibido / No Recibido)
   recibido: ['RECIBIDO','ESTADO RECIB','NO RECIBIDO'],
