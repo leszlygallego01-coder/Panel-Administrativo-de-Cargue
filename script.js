@@ -255,7 +255,7 @@ const DATASETS = [
   {
     key: 'traslados', tabla: 'Tabla_8', title: 'Traslados', required: false, accumulate: true,
     desc: 'Traslados entre bodegas realizados por cada usuario. Los datos provienen exclusivamente de la carpeta de Google Drive y se ACUMULAN: cada sincronización suma los traslados nuevos y no borra lo ya cargado. El Codigo se cruza con la tabla Homólogo para saber si la molécula es Pareto o No Pareto.',
-    cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Lote','Fecha de Vencimiento','Recibido','Usuario'],
+    cols: ['Traslado','Fecha','Bodega Origen','Bodega Destino','Codigo','Descripcion','Cantidad','Lote','Fecha de Vencimiento','Recibido','Usuario','Estado Logístico'],
     fields: {
       traslado: ['TRASLADO','NRO TRASLADO','NUMERO TRASLADO','NÚMERO TRASLADO','No TRASLADO','DOCUMENTO TRASLADO','DOCUMENTO','CONSECUTIVO'],
       fecha: ['FECHA','FECHA TRASLADO','FECHA DE TRASLADO','FECHA DEL TRASLADO'],
@@ -271,6 +271,11 @@ const DATASETS = [
       // Estado de recepción del traslado: 'Recibido' o 'No Recibido'. Solo las líneas
       // NO recibidas se consideran pendientes en la Base Supervisores.
       recibido: ['RECIBIDO','RECIBIDA','ESTADO RECIBIDO','ESTADO DEL TRASLADO','ESTADO TRASLADO','ESTADO','RECEPCION','RECEPCIÓN'],
+      // Estado Logístico (columna M del archivo de Drive): indica si el traslado ya
+      // fue ALISTADO en la bodega origen o sigue PENDIENTE POR ALISTAR. Es distinto
+      // de "Recibido" (que es la recepción en la bodega destino). Se mapea por header
+      // exacto y, como respaldo, por palabra clave (ver FIELD_FALLBACK_KEYWORDS).
+      estadoLogistico: ['ESTADO LOGISTICO','ESTADO LOGÍSTICO','ESTADO LOGISTICO ALISTAMIENTO','ESTADO LOGÍSTICO ALISTAMIENTO','ESTADO LOGISTICO DE ALISTAMIENTO','ESTADO DE ALISTAMIENTO','ESTADO ALISTAMIENTO','ALISTAMIENTO','ESTADO LOGISTICA','ESTADO LOGÍSTICA','ESTATUS LOGISTICO','ESTATUS LOGÍSTICO','ESTADO DEL ALISTAMIENTO'],
       usuario: ['USUARIO','USUARIO CREACION','USUARIO CREACIÓN','USUARIO QUE REALIZA','USUARIO TRASLADO','RESPONSABLE']
     }
   },
@@ -704,6 +709,11 @@ const FIELD_FALLBACK_KEYWORDS = {
   diferencia: ['DIFERENCIA'],
   // Columna "Recibido" de Traslados (valores tipo Recibido / No Recibido)
   recibido: ['RECIBIDO','ESTADO RECIB','NO RECIBIDO'],
+  // Columna "Estado Logístico" de Traslados (columna M): respaldo por palabra clave
+  // para capturarla aunque el encabezado tenga variantes ("Estado Logistico",
+  // "Estatus logistico de alistamiento", etc.). Se evita "ESTADO" a secas para no
+  // chocar con "Recibido"; se usan raíces específicas del alistamiento/logística.
+  estadoLogistico: ['ESTADO LOGISTICO','ESTADO LOGISTICO ALISTAMIENTO','ESTATUS LOGISTICO','LOGISTIC','ALISTAMIENTO','ALISTA'],
   // Departamento de la bodega (tabla Bodega y Zona)
   departamento: ['DEPARTAMENTO','DEPTO','DPTO']
 };
